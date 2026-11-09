@@ -173,12 +173,30 @@
         "apiUser": { "type": "string" },
         "senderId": { "type": "string" }
       }
+    },
+    "ApprovalRequest": {
+      "title": "Approval Request",
+      "description": "Pending requests for sales and due collections submitted by salesmen requiring admin approval.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["sale", "due_payment"] },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "temporaryInvoiceNo": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "status", "userId"]
     }
   },
   "firestore": {
     "businesses/{businessId}": {
       "schema": "Business",
       "description": "Business root document"
+    },
+    "businesses/{businessId}/approval_requests": {
+      "schema": "ApprovalRequest",
+      "description": "Temporary invoices and due collection approval requests"
     },
     "businesses/{businessId}/products": {
       "schema": "Product",

@@ -109,7 +109,10 @@ service cloud.firestore {
              (!('paymentMethod' in data) || data.paymentMethod is string) &&
              (!('items' in data) || (data.items is list && (data.items.size() == 0 || data.items[0] is map))) &&
              (!('createdBy' in data) || data.createdBy is string) &&
-             (!('createdAt' in data) || data.createdAt is string);
+             (!('createdAt' in data) || data.createdAt is string) &&
+             (!('isTemporary' in data) || data.isTemporary is bool) &&
+             (!('approvalStatus' in data) || data.approvalStatus in ['pending', 'approved', 'rejected']) &&
+             (!('approvalRequestId' in data) || data.approvalRequestId is string);
     }
 
     function isValidUser(data) {
@@ -228,9 +231,14 @@ service cloud.firestore {
         allow create: if isBusinessUser(businessId) && isValidSale(incoming()) && isValidId(saleId);
         allow update: if isBusinessUser(businessId) && isValidSale(incoming()) && (
           isBusinessAdmin(businessId) ||
-          incoming().diff(existing()).affectedKeys().hasOnly(['paidAmount', 'dueAmount'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['paidAmount', 'dueAmount', 'approvalStatus', 'isTemporary', 'approvalRequestId'])
         );
         allow delete: if isBusinessAdmin(businessId);
+      }
+
+      // Approval Requests subcollection (Temporary Invoices / Due Payment Requests)
+      match /approval_requests/{requestId} {
+        allow read, write: if true;
       }
 
       // Expenses subcollection

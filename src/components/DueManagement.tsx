@@ -79,36 +79,58 @@ export function DueManagement({ user }: DueManagementProps) {
     setIsProcessing(true);
     try {
       const amount = parseFloat(paymentAmount);
-      await api.recordPayment(selectedCustomer.id, amount, "cash");
-      showNotify("পেমেন্ট সফলভাবে গ্রহণ করা হয়েছে");
-      
-      // Generate Receipt
-      await printPaymentReceipt({
-        name: selectedCustomer.name,
-        phone: selectedCustomer.phone,
-        amount: amount,
-        type: 'customer',
-        dueRemaining: selectedCustomer.dueAmount - amount
-      });
 
-      // Auto SMS logic
-      try {
-        const smsConfig = await api.getSMSConfig();
-        if (smsConfig.autoSMS && selectedCustomer.phone) {
-          const message = `প্রিয় ${selectedCustomer.name}, আপনার নিকট হতে ৳${amount} পেমেন্ট গ্রহণ করা হয়েছে। অবশিষ্ট বকেয়া: ৳${selectedCustomer.dueAmount - amount}। ধন্যবাদ।`;
-          await api.sendSMS(selectedCustomer.phone, message);
-          console.log("[Auto SMS] Sent payment confirmation to:", selectedCustomer.phone);
+      if (!isAdmin) {
+        // Salesman mode: Create Temporary Due Payment Request
+        const { receiptData } = await api.createDuePaymentRequest({
+          customerId: selectedCustomer.id,
+          amount,
+          method: "cash",
+          note: `সেলসম্যান কর্তৃক বকেয়া আদায় (${user?.name || 'সেলসম্যান'})`
+        });
+        showNotify("বকেয়া আদায়ের খসড়া রিকুয়েস্ট সফলভাবে জমা হয়েছে! এডমিন অনুমোদন করলে বকেয়া কর্তন হবে।", "success");
+        
+        await printPaymentReceipt({
+          ...receiptData,
+          isTemporary: true
+        });
+
+        setSelectedCustomer(null);
+        setPaymentAmount("");
+      } else {
+        // Admin mode: Instant confirmed payment
+        await api.recordPayment(selectedCustomer.id, amount, "cash");
+        showNotify("পেমেন্ট সফলভাবে গ্রহণ করা হয়েছে");
+        
+        // Generate Official Receipt
+        await printPaymentReceipt({
+          name: selectedCustomer.name,
+          phone: selectedCustomer.phone,
+          amount: amount,
+          type: 'customer',
+          dueRemaining: selectedCustomer.dueAmount - amount,
+          isTemporary: false
+        });
+
+        // Auto SMS logic
+        try {
+          const smsConfig = await api.getSMSConfig();
+          if (smsConfig.autoSMS && selectedCustomer.phone) {
+            const message = `প্রিয় ${selectedCustomer.name}, আপনার নিকট হতে ৳${amount} পেমেন্ট গ্রহণ করা হয়েছে। অবশিষ্ট বকেয়া: ৳${selectedCustomer.dueAmount - amount}। ধন্যবাদ।`;
+            await api.sendSMS(selectedCustomer.phone, message);
+            console.log("[Auto SMS] Sent payment confirmation to:", selectedCustomer.phone);
+          }
+        } catch (err) {
+          console.error("[Auto SMS] Error:", err);
         }
-      } catch (err) {
-        console.error("[Auto SMS] Error:", err);
-      }
 
-      await loadDues();
-      setSelectedCustomer(null);
-      setPaymentAmount("");
-    } catch (e) {
+        await loadDues();
+        setSelectedCustomer(null);
+        setPaymentAmount("");
+      }
+    } catch (e: any) {
       console.error(e);
-      showNotify("পেমেন্ট সম্পন্ন করা যায়নি", "error");
+      showNotify(e.message || "পেমেন্ট সম্পন্ন করা যায়নি", "error");
     } finally {
       setIsProcessing(false);
     }
@@ -126,6 +148,15 @@ export function DueManagement({ user }: DueManagementProps) {
            <h3 className="text-2xl font-black text-rose-600 dark:text-rose-400">৳ {totalDues.toLocaleString()}</h3>
         </div>
       </div>
+
+      {!isAdmin && (
+        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 p-3.5 rounded-2xl flex items-center gap-3 text-sm text-amber-800 dark:text-amber-300 font-bengali">
+          <span className="text-2xl">⏳</span>
+          <div>
+            <span className="font-bold">সেলসম্যান মোড:</span> ক্রেতার কাছ থেকে বকেয়া আদায় গ্রহণ করলে <strong>খসড়া/টেম্পোরারি রসিদ</strong> তৈরি হবে। এডমিন অনুমোদন করার পর মূল বকেয়া থেকে কর্তন হবে।
+          </div>
+        </div>
+      )}
 
       <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col md:flex-row gap-4 transition-colors">
         <div className="relative flex-1 group">
@@ -273,7 +304,7 @@ export function DueManagement({ user }: DueManagementProps) {
                   ) : (
                     <>
                       <CheckCircle2 size={24} />
-                      পেমেন্ট কনফার্ম করুন
+                      {!isAdmin ? "টেম্পোরারি বকেয়া আদায় রিকুয়েস্ট জমা দিন" : "পেমেন্ট কনফার্ম করুন"}
                     </>
                   )}
                 </button>

@@ -137,6 +137,38 @@ export interface Sale {
   customerPhone?: string;
   customerAddress?: string;
   createdBy?: string;
+  isTemporary?: boolean;
+  approvalStatus?: 'pending' | 'approved' | 'rejected';
+  approvalRequestId?: string;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  type: 'sale' | 'due_payment';
+  status: 'pending' | 'approved' | 'rejected';
+  userId: string;
+  userName: string;
+  userRole?: string;
+  temporaryInvoiceNo?: string;
+  finalInvoiceNo?: string;
+  createdAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  rejectReason?: string;
+  
+  // For Sale Request:
+  saleData?: Partial<Sale>;
+  
+  // For Due Payment Request:
+  paymentData?: {
+    customerId: string;
+    customerName: string;
+    customerPhone?: string;
+    amount: number;
+    paymentMethod: string;
+    note?: string;
+    currentDueBefore: number;
+  };
 }
 
 export interface SaleItem {

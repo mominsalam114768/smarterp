@@ -18,7 +18,8 @@ import {
   Activity,
   UserCheck,
   Building2,
-  Wallet
+  Wallet,
+  ClipboardCheck
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { motion } from "motion/react";
@@ -37,6 +38,7 @@ const menuItems = [
   { id: "dashboard", label: "ড্যাশবোর্ড", icon: LayoutDashboard },
   { id: "pos", label: "পিওএস (POS)", icon: ShoppingCart },
   { id: "sales", label: "বিক্রয়", icon: FileText },
+  { id: "approvals", label: "অনুমোদন রিকুয়েস্ট", icon: ClipboardCheck },
   { id: "products", label: "পণ্য তালিকা", icon: Package },
   { id: "customers", label: "ক্রেতা", icon: Users },
   { id: "suppliers", label: "সরবরাহকারী", icon: Truck },
@@ -50,10 +52,20 @@ const menuItems = [
 
 export function Sidebar({ activeTab, setActiveTab, user, business }: SidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
+
+  useEffect(() => {
+    const unsub = api.subscribeApprovalRequests((reqs) => {
+      const pending = reqs.filter(r => r.status === 'pending');
+      setPendingApprovalsCount(pending.length);
+    }, user?.role === 'admin' ? undefined : user?.id);
+    return () => unsub();
+  }, [user]);
 
   const filteredMenuItems = menuItems.filter(item => {
     if (!user) return false;
     if (user.role === 'admin') return true;
+    if (item.id === 'approvals') return false; // Strictly admin only
     return user.permissions?.includes(item.id);
   });
 
@@ -135,7 +147,19 @@ export function Sidebar({ activeTab, setActiveTab, user, business }: SidebarProp
             )}
           >
             <item.icon size={20} className={activeTab === item.id ? "text-white" : "text-slate-400 dark:text-slate-500 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors"} />
-            {!isCollapsed && <span className="font-bengali text-sm">{item.label}</span>}
+            {!isCollapsed && (
+              <span className="font-bengali text-sm flex-1 text-left flex items-center justify-between">
+                <span>{item.label}</span>
+                {item.id === "approvals" && pendingApprovalsCount > 0 && (
+                  <span className="bg-amber-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse shadow-sm">
+                    {pendingApprovalsCount}
+                  </span>
+                )}
+              </span>
+            )}
+            {isCollapsed && item.id === "approvals" && pendingApprovalsCount > 0 && (
+              <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-amber-500 rounded-full animate-ping" />
+            )}
             {activeTab === item.id && !isCollapsed && (
               <motion.div 
                 layoutId="active-nav"

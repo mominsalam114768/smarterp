@@ -22,6 +22,8 @@ const performPrint = (html: string, printerType: 'thermal' | 'a4' = 'thermal') =
           background-color: #ffffff !important;
           margin: 0 auto;
           line-height: 1.5;
+          position: relative;
+          overflow: hidden;
         }
 
         .thermal-layout {
@@ -116,7 +118,7 @@ const performPrint = (html: string, printerType: 'thermal' | 'a4' = 'thermal') =
   window.dispatchEvent(event);
 };
 
-export const printInvoice = async (sale: Sale) => {
+export const printInvoice = async (sale: Sale, isTemporary?: boolean) => {
   const business = await api.getBusiness().catch(() => ({ 
     name: 'Smart Business', 
     address: 'Dhaka, Bangladesh',
@@ -127,6 +129,7 @@ export const printInvoice = async (sale: Sale) => {
 
   const printerType = business.defaultPrinter || 'thermal';
   const isThermal = printerType === 'thermal';
+  const isTemp = isTemporary ?? sale.isTemporary ?? (sale.approvalStatus === 'pending');
 
   // Fetch customer stats to show total due
   let customerDue = 0;
@@ -146,6 +149,12 @@ export const printInvoice = async (sale: Sale) => {
   }
   
   const html = `
+    ${isTemp ? `
+      <div style="position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) rotate(-30deg); font-size: ${isThermal ? '32px' : '70px'}; font-weight: 900; color: rgba(220, 38, 38, 0.14); border: ${isThermal ? '3px' : '6px'} dashed rgba(220, 38, 38, 0.25); padding: ${isThermal ? '6px 18px' : '15px 45px'}; border-radius: 12px; pointer-events: none; z-index: 100; letter-spacing: ${isThermal ? '5px' : '12px'}; font-family: 'Arial Black', Impact, sans-serif; text-transform: uppercase; white-space: nowrap; user-select: none;">
+        TEMPORARY
+      </div>
+    ` : ''}
+
     <div class="print-header" style="display: flex; align-items: start; gap: 20px;">
       ${business.logo ? `<img src="${business.logo}" style="height: 80px; width: auto; object-fit: contain; border-radius: 8px;" />` : ''}
       <div style="flex: 1;">
@@ -164,7 +173,9 @@ export const printInvoice = async (sale: Sale) => {
         ${sale.customerId ? `<div style="color: #64748b; font-size: 13px;">আইডি: ${sale.customerId}</div>` : ''}
       </div>
       <div style="flex: 1; text-align: right;">
-        <div style="font-size: 20px; font-weight: bold; color: #2563eb;">ইনভয়েস: #${sale.invoiceNo}</div>
+        <div style="font-size: 18px; font-weight: bold; color: #2563eb;">
+          ইনভয়েস: #${sale.invoiceNo}
+        </div>
         <div style="color: #64748b; margin-top: 5px; font-size: 13px;">তারিখ (ঢাকা সময়): ${sale.createdAt ? formatDhakaDateTime(sale.createdAt) : formatDhakaDateTime(new Date())}</div>
       </div>
     </div>
@@ -365,7 +376,8 @@ export const printPaymentReceipt = async (data: {
   amount: number, 
   type: 'customer' | 'supplier',
   dueRemaining: number,
-  description?: string
+  description?: string,
+  isTemporary?: boolean
 }) => {
   const business = await api.getBusiness().catch(() => ({ 
     name: 'Smart Business', 
@@ -377,6 +389,12 @@ export const printPaymentReceipt = async (data: {
   const printerType = business.defaultPrinter || 'thermal';
 
   const html = `
+    ${data.isTemporary ? `
+      <div style="position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) rotate(-30deg); font-size: ${printerType === 'thermal' ? '32px' : '70px'}; font-weight: 900; color: rgba(220, 38, 38, 0.14); border: ${printerType === 'thermal' ? '3px' : '6px'} dashed rgba(220, 38, 38, 0.25); padding: ${printerType === 'thermal' ? '6px 18px' : '15px 45px'}; border-radius: 12px; pointer-events: none; z-index: 100; letter-spacing: ${printerType === 'thermal' ? '5px' : '12px'}; font-family: 'Arial Black', Impact, sans-serif; text-transform: uppercase; white-space: nowrap; user-select: none;">
+        TEMPORARY
+      </div>
+    ` : ''}
+
     <div class="print-header" style="display: flex; align-items: start; gap: 20px;">
       ${business.logo ? `<img src="${business.logo}" style="height: 80px; width: auto; object-fit: contain; border-radius: 8px;" />` : ''}
       <div style="flex: 1;">
@@ -387,7 +405,7 @@ export const printPaymentReceipt = async (data: {
     </div>
     
     <div style="text-align: center; margin-bottom: 30px;">
-      <div style="font-size: 22px; font-weight: bold; color: #059669; border: 2px solid #059669; display: inline-block; padding: 5px 20px; border-radius: 8px; text-transform: uppercase;">
+      <div style="font-size: 20px; font-weight: bold; color: ${data.type === 'customer' ? '#059669' : '#2563eb'}; border: 2px solid ${data.type === 'customer' ? '#059669' : '#2563eb'}; display: inline-block; padding: 5px 20px; border-radius: 8px; text-transform: uppercase;">
         ${data.type === 'customer' ? 'মানি রিসিট (ক্রেতা)' : 'পেমেন্ট ভাউচার (সরবরাহকারী)'}
       </div>
       <div style="font-size: 14px; color: #64748b; margin-top: 10px;">তারিখ (ঢাকা সময়): ${formatDhakaDateTime(new Date())}</div>

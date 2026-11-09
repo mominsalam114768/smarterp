@@ -38,6 +38,7 @@ const DueManagement = lazy(() => import("./components/DueManagement").then(m => 
 const SMSModule = lazy(() => import("./components/SMSModule").then(m => ({ default: m.SMSModule })));
 const UserManagement = lazy(() => import("./components/UserManagement").then(m => ({ default: m.UserManagement })));
 const Settings = lazy(() => import("./components/Settings").then(m => ({ default: m.Settings })));
+const ApprovalManagement = lazy(() => import("./components/ApprovalManagement").then(m => ({ default: m.ApprovalManagement })));
 
 const LoadingFallback = () => (
   <div className="flex-1 flex items-center justify-center bg-slate-50 dark:bg-slate-950 transition-colors">
@@ -265,7 +266,7 @@ export default function App() {
     // If an activeTab was previously saved (e.g. before refresh), keep it if permitted
     const savedTab = localStorage.getItem("smart_business_active_tab");
     if (userData.role !== 'admin') {
-      const allowed = ['dashboard', 'pos', 'sales', 'products', 'customers', 'suppliers', 'accounting', 'due', 'sms', 'reports'].filter(t => userData.permissions?.includes(t));
+      const allowed = ['dashboard', 'pos', 'sales', 'approvals', 'products', 'customers', 'suppliers', 'accounting', 'due', 'sms', 'reports'].filter(t => t === 'approvals' || userData.permissions?.includes(t));
       if (savedTab && allowed.includes(savedTab)) {
         setActiveTab(savedTab);
       } else if (allowed.length > 0 && !allowed.includes(activeTab)) {
@@ -287,14 +288,10 @@ export default function App() {
   };
 
   const handleFinalPrint = () => {
-    // We use the existing hidden #printable-area which is configured in CSS
-    // to be the only thing visible during print. This is much more reliable
-    // on mobile devices than window.open().
     window.print();
   };
 
   const handleDownloadPDF = async () => {
-    // Target the inner invoice div for a clean PDF without preview shadows
     const element = document.querySelector('.preview-content-container > div');
     if (!element) return;
     setIsGeneratingPDF(true);
@@ -305,12 +302,11 @@ export default function App() {
         filename: `smart-business-${new Date().getTime()}.pdf`,
         image: { type: 'jpeg', quality: 0.98 },
         html2canvas: { 
-          scale: 3, // High definition
+          scale: 3,
           useCORS: true, 
           letterRendering: true,
           scrollY: 0,
           onclone: (clonedDoc: Document) => {
-            // Remove any potential shadows/borders from the preview container for a clean PDF
             const target = clonedDoc.querySelector('.preview-content-container > div') as HTMLElement;
             if (target) {
               target.style.boxShadow = 'none';
@@ -318,8 +314,6 @@ export default function App() {
               target.style.padding = '0';
               target.style.margin = '0';
             }
-
-            // Force white background for the whole PDF body
             clonedDoc.body.style.background = '#ffffff';
             clonedDoc.body.style.padding = '0';
 
@@ -357,6 +351,7 @@ export default function App() {
   const canAccessTab = (tabId: string) => {
     if (!user) return false;
     if (user.role === 'admin') return true; 
+    if (tabId === 'approvals') return false; // Strictly admin only
     
     // Explicitly check permissions array
     if (user.permissions && Array.isArray(user.permissions)) {
@@ -640,6 +635,7 @@ export default function App() {
                   {activeTab === "dashboard" && canAccessTab("dashboard") && <Dashboard user={user} />}
                   {activeTab === "pos" && canAccessTab("pos") && <POS user={user} />}
                   {activeTab === "sales" && canAccessTab("sales") && <SalesList user={user} />}
+                  {activeTab === "approvals" && canAccessTab("approvals") && <ApprovalManagement user={user} />}
                   {activeTab === "products" && canAccessTab("products") && <ProductList user={user} />}
                   {activeTab === "customers" && canAccessTab("customers") && <CustomerList user={user} />}
                   {activeTab === "suppliers" && canAccessTab("suppliers") && <SupplierList user={user} />}

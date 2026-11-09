@@ -11,7 +11,8 @@ import {
   Target,
   BarChart3,
   Settings as SettingsIcon,
-  Truck
+  Truck,
+  ClipboardCheck
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { User } from "../types";
@@ -28,6 +29,7 @@ export function MobileNav({ activeTab, setActiveTab, user }: MobileNavProps) {
     { id: "dashboard", label: "হোম", icon: LayoutDashboard },
     { id: "pos", label: "পিওএস", icon: ShoppingCart },
     { id: "sales", label: "বিক্রয়", icon: FileText },
+    { id: "approvals", label: "অনুমোদন", icon: ClipboardCheck },
     { id: "products", label: "পণ্য", icon: Package },
     { id: "customers", label: "ক্রেতা", icon: Users },
     { id: "suppliers", label: "সরবরাহকারী", icon: Truck },
@@ -42,6 +44,7 @@ export function MobileNav({ activeTab, setActiveTab, user }: MobileNavProps) {
   const filteredItems = navItems.filter(item => {
     if (!user) return false;
     if (user.role === 'admin') return true;
+    if (item.id === 'approvals') return false; // Strictly admin only
     return user.permissions?.includes(item.id);
   });
 

@@ -15,7 +15,8 @@ import {
   User, 
   Business, 
   Category, 
-  Expense 
+  Expense,
+  ApprovalRequest
 } from "../types";
 import { 
   db, 
@@ -61,6 +62,7 @@ interface LocalDBState {
   smsLogs: SMSLog[];
   smsConfig: SMSConfig;
   business: Business;
+  approvalRequests: ApprovalRequest[];
 }
 
 // Default initial data for seeding if Firestore is empty (Only Admin, everything else fresh and empty)
@@ -105,7 +107,8 @@ const defaultDbData: LocalDBState = {
     address: "ঢাকা, বাংলাদেশ",
     phone: "01741456838",
     theme: "light"
-  }
+  },
+  approvalRequests: []
 };
 
 // Safe access to client cache
@@ -127,7 +130,8 @@ function getLocalCache(): LocalDBState {
       expenses: parsed.expenses || [],
       smsLogs: parsed.smsLogs || [],
       smsConfig: parsed.smsConfig || defaultDbData.smsConfig,
-      business: parsed.business || defaultDbData.business
+      business: parsed.business || defaultDbData.business,
+      approvalRequests: parsed.approvalRequests || []
     };
   } catch {
     return defaultDbData;
@@ -143,6 +147,21 @@ function saveLocalCache(partial: Partial<LocalDBState>) {
   } catch (e) {
     console.warn("Could not save to localStorage", e);
   }
+}
+
+export function cleanForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) return null as unknown as T;
+  if (typeof data !== 'object') return data;
+  if (Array.isArray(data)) {
+    return data.map(item => cleanForFirestore(item)) as unknown as T;
+  }
+  const result: any = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined) {
+      result[key] = cleanForFirestore(value);
+    }
+  }
+  return result;
 }
 
 export const getCurrentUser = (): User | null => {
@@ -661,7 +680,7 @@ export const api = {
   },
 
   // --- Sales ---
-  getSales: async (userId?: string): Promise<Sale[]> => {
+  getSales: async (userId?: string, includeTemporary: boolean = false): Promise<Sale[]> => {
     const curUser = getCurrentUser();
     let salesList: Sale[] = [];
 
@@ -675,6 +694,10 @@ export const api = {
       salesList = getLocalCache().sales || [];
     }
 
+    if (!includeTemporary) {
+      salesList = salesList.filter(s => !s.isTemporary && s.approvalStatus !== 'pending' && s.approvalStatus !== 'rejected');
+    }
+
     // Role isolation
     if (curUser && curUser.role === "salesman") {
       return salesList.filter(s => s.userId === curUser.id || s.createdBy === curUser.id);
@@ -685,7 +708,7 @@ export const api = {
     return salesList;
   },
 
-  subscribeSales: (callback: (sales: Sale[]) => void, userId?: string): (() => void) => {
+  subscribeSales: (callback: (sales: Sale[]) => void, userId?: string, includeTemporary: boolean = false): (() => void) => {
     try {
       const colRef = collection(db, "businesses", currentBusinessId, "sales");
       return onSnapshot(colRef, (snap) => {
@@ -694,6 +717,10 @@ export const api = {
         snap.forEach(d => salesList.push({ id: d.id, ...d.data() } as Sale));
         salesList.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
         saveLocalCache({ sales: salesList });
+
+        if (!includeTemporary) {
+          salesList = salesList.filter(s => !s.isTemporary && s.approvalStatus !== 'pending' && s.approvalStatus !== 'rejected');
+        }
 
         if (curUser && curUser.role === "salesman") {
           callback(salesList.filter(s => s.userId === curUser.id || s.createdBy === curUser.id));
@@ -727,7 +754,7 @@ export const api = {
       payableAmount: payable,
       paidAmount: paid,
       dueAmount: due,
-      createdAt: new Date().toISOString()
+      createdAt: sale.createdAt || new Date().toISOString()
     } as Sale;
 
     const cache = getLocalCache();
@@ -815,6 +842,391 @@ export const api = {
     cache.sales = cache.sales.filter(s => s.id !== id);
     saveLocalCache(cache);
     return true;
+  },
+
+  // --- Approval Requests (Temporary Invoices / Due Payment Requests) ---
+  getApprovalRequests: async (userId?: string): Promise<ApprovalRequest[]> => {
+    const curUser = getCurrentUser();
+    let list: ApprovalRequest[] = [];
+    try {
+      const snap = await getDocs(collection(db, "businesses", currentBusinessId, "approval_requests"));
+      snap.forEach(d => list.push({ id: d.id, ...d.data() } as ApprovalRequest));
+      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      
+      // Merge with cache so local items aren't overwritten if pending write
+      const cache = getLocalCache();
+      const existingMap = new Map<string, ApprovalRequest>();
+      list.forEach(item => existingMap.set(item.id, item));
+      (cache.approvalRequests || []).forEach(localItem => {
+        if (!existingMap.has(localItem.id)) {
+          existingMap.set(localItem.id, localItem);
+        }
+      });
+      list = Array.from(existingMap.values());
+      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      saveLocalCache({ approvalRequests: list });
+    } catch (e) {
+      console.warn("Firestore getApprovalRequests failed, using cache:", e);
+      list = getLocalCache().approvalRequests || [];
+    }
+
+    if (curUser && curUser.role === 'salesman') {
+      return list.filter(r => r.userId === curUser.id);
+    }
+    if (userId && userId !== 'all') {
+      return list.filter(r => r.userId === userId);
+    }
+    return list;
+  },
+
+  subscribeApprovalRequests: (callback: (requests: ApprovalRequest[]) => void, userId?: string): (() => void) => {
+    const notify = (allList: ApprovalRequest[]) => {
+      const curUser = getCurrentUser();
+      let res = allList;
+      if (curUser && curUser.role === 'salesman') {
+        res = allList.filter(r => r.userId === curUser.id);
+      } else if (userId && userId !== 'all') {
+        res = allList.filter(r => r.userId === userId);
+      }
+      callback(res);
+    };
+
+    // Emit initial from local cache immediately
+    const initialCache = getLocalCache();
+    notify(initialCache.approvalRequests || []);
+
+    let unsubFs = () => {};
+    try {
+      const colRef = collection(db, "businesses", currentBusinessId, "approval_requests");
+      unsubFs = onSnapshot(colRef, (snap) => {
+        let list: ApprovalRequest[] = [];
+        snap.forEach(d => list.push({ id: d.id, ...d.data() } as ApprovalRequest));
+        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        
+        const cache = getLocalCache();
+        const existingMap = new Map<string, ApprovalRequest>();
+        list.forEach(item => existingMap.set(item.id, item));
+        (cache.approvalRequests || []).forEach(localItem => {
+          if (!existingMap.has(localItem.id)) {
+            existingMap.set(localItem.id, localItem);
+          }
+        });
+        const combinedList = Array.from(existingMap.values());
+        combinedList.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        saveLocalCache({ approvalRequests: combinedList });
+
+        notify(combinedList);
+      }, (err) => {
+        console.warn("onSnapshot approval_requests error, keeping local cache:", err);
+      });
+    } catch {}
+
+    const handleLocalUpdate = () => {
+      const cache = getLocalCache();
+      notify(cache.approvalRequests || []);
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener('approval-requests-updated', handleLocalUpdate);
+    }
+
+    return () => {
+      unsubFs();
+      if (typeof window !== "undefined") {
+        window.removeEventListener('approval-requests-updated', handleLocalUpdate);
+      }
+    };
+  },
+
+  createSaleRequest: async (sale: Partial<Sale>): Promise<{ request: ApprovalRequest, sale: Sale }> => {
+    const curUser = getCurrentUser();
+    const requestId = `req_sale_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const tempInvNo = `TMP-${Date.now().toString().slice(-6)}`;
+    const payable = Number(sale.payableAmount) || Number(sale.totalAmount) || 0;
+    const paid = Number(sale.paidAmount) || 0;
+    const due = Number(sale.dueAmount) !== undefined ? Number(sale.dueAmount) : Math.max(0, payable - paid);
+
+    const tempSale: Sale = {
+      ...sale,
+      id: requestId,
+      invoiceNo: tempInvNo,
+      userId: curUser?.id || "salesman",
+      createdBy: curUser?.id || "salesman",
+      totalAmount: Number(sale.totalAmount) || payable,
+      payableAmount: payable,
+      paidAmount: paid,
+      dueAmount: due,
+      createdAt: new Date().toISOString(),
+      isTemporary: true,
+      approvalStatus: 'pending',
+      approvalRequestId: requestId
+    } as Sale;
+
+    const newRequest: ApprovalRequest = {
+      id: requestId,
+      type: 'sale',
+      status: 'pending',
+      userId: curUser?.id || "salesman",
+      userName: curUser?.name || "সেলসম্যান",
+      userRole: curUser?.role || "salesman",
+      temporaryInvoiceNo: tempInvNo,
+      createdAt: new Date().toISOString(),
+      saleData: tempSale
+    };
+
+    // Sanitize objects to guarantee no undefined values throw Firestore error
+    const sanitizedSale = cleanForFirestore(tempSale);
+    const sanitizedRequest = cleanForFirestore(newRequest);
+
+    // Save to Firestore approval_requests & sales (as draft)
+    try {
+      await setDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId), sanitizedRequest);
+      await setDoc(doc(db, "businesses", currentBusinessId, "sales", requestId), sanitizedSale);
+    } catch (e) {
+      console.error("Firestore createSaleRequest write failed:", e);
+    }
+
+    const cache = getLocalCache();
+    cache.approvalRequests = [newRequest, ...(cache.approvalRequests || []).filter(r => r.id !== requestId)];
+    cache.sales = [tempSale, ...(cache.sales || []).filter(s => s.id !== requestId)];
+    saveLocalCache(cache);
+
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent('approval-requests-updated', { detail: newRequest }));
+    }
+
+    // Stock & Customer Due are UNTOUCHED!
+    return { request: newRequest, sale: tempSale };
+  },
+
+  createDuePaymentRequest: async (data: { customerId: string, amount: number, method?: string, note?: string }): Promise<{ request: ApprovalRequest, receiptData: any }> => {
+    const curUser = getCurrentUser();
+    const requestId = `req_due_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const tempVoucherNo = `TMP-DUE-${Date.now().toString().slice(-5)}`;
+    const amount = Number(data.amount) || 0;
+
+    const cache = getLocalCache();
+    const cust = cache.customers.find(c => 
+      c.id === data.customerId || 
+      (c.phone && c.phone === data.customerId) || 
+      (c.name && c.name.toLowerCase() === data.customerId.toLowerCase())
+    );
+
+    const newRequest: ApprovalRequest = {
+      id: requestId,
+      type: 'due_payment',
+      status: 'pending',
+      userId: curUser?.id || "salesman",
+      userName: curUser?.name || "সেলসম্যান",
+      userRole: curUser?.role || "salesman",
+      temporaryInvoiceNo: tempVoucherNo,
+      createdAt: new Date().toISOString(),
+      paymentData: {
+        customerId: data.customerId,
+        customerName: cust?.name || "ক্রেতা",
+        customerPhone: cust?.phone || "",
+        amount,
+        paymentMethod: data.method || "cash",
+        note: data.note || "",
+        currentDueBefore: Number(cust?.dueAmount) || 0
+      }
+    };
+
+    const sanitizedRequest = cleanForFirestore(newRequest);
+
+    try {
+      await setDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId), sanitizedRequest);
+    } catch (e) {
+      console.error("Firestore createDuePaymentRequest write failed:", e);
+    }
+
+    cache.approvalRequests = [newRequest, ...(cache.approvalRequests || []).filter(r => r.id !== requestId)];
+    saveLocalCache(cache);
+
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent('approval-requests-updated', { detail: newRequest }));
+    }
+
+    // Customer Due is UNTOUCHED!
+    const receiptData = {
+      name: cust?.name || "ক্রেতা",
+      phone: cust?.phone || "",
+      amount,
+      type: 'customer' as const,
+      dueRemaining: Number(cust?.dueAmount) || 0,
+      description: `খসড়া বকেয়া আদায় (ভাউচার: ${tempVoucherNo})`,
+      isTemporary: true
+    };
+
+    return { request: newRequest, receiptData };
+  },
+
+  approveRequest: async (requestId: string): Promise<any> => {
+    const curUser = getCurrentUser();
+    const cache = getLocalCache();
+    
+    let req = cache.approvalRequests.find(r => r.id === requestId);
+    if (!req) {
+      try {
+        const snap = await getDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId));
+        if (snap.exists()) req = snap.data() as ApprovalRequest;
+      } catch {}
+    }
+
+    if (!req) {
+      throw new Error("অনুরোধটি খুঁজে পাওয়া যায়নি।");
+    }
+
+    if (req.status !== 'pending') {
+      throw new Error("এই অনুরোধটি ইতিমধ্যে পর্যালোচনা করা হয়েছে।");
+    }
+
+    const reviewedAt = new Date().toISOString();
+    const reviewedBy = curUser?.name || "এডমিন";
+
+    if (req.type === 'sale') {
+      const saleData = req.saleData;
+      if (!saleData || !Array.isArray(saleData.items)) {
+        throw new Error("বিক্রয়ের তথ্য অসম্পূর্ণ।");
+      }
+
+      // Check stock availability
+      for (const item of saleData.items) {
+        const prodId = item.productId || (item as any).id;
+        const currentProd = cache.products.find(p => p.id === prodId);
+        if (currentProd && (Number(currentProd.stock) || 0) < Number(item.quantity)) {
+          throw new Error(`পণ্য "${item.name}" পর্যাপ্ত স্টকে নেই! বর্তমান স্টক: ${currentProd.stock}, প্রয়োজন: ${item.quantity}`);
+        }
+      }
+
+      // Official Final Invoice Number
+      const finalInvoiceNo = `INV-${Date.now().toString().slice(-6)}`;
+      const finalSaleId = `sale_${Date.now()}`;
+
+      // Call createSale which deducts stock and updates customer balance!
+      const confirmedSale = await api.createSale({
+        ...saleData,
+        id: finalSaleId,
+        invoiceNo: finalInvoiceNo,
+        isTemporary: false,
+        approvalStatus: 'approved',
+        approvalRequestId: requestId
+      });
+
+      // Remove temporary sale document
+      try {
+        await deleteDoc(doc(db, "businesses", currentBusinessId, "sales", requestId));
+      } catch {}
+      cache.sales = cache.sales.filter(s => s.id !== requestId);
+
+      // Update approval request
+      req.status = 'approved';
+      req.reviewedAt = reviewedAt;
+      req.reviewedBy = reviewedBy;
+      req.finalInvoiceNo = finalInvoiceNo;
+
+      try {
+        await updateDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId), {
+          status: 'approved',
+          reviewedAt,
+          reviewedBy,
+          finalInvoiceNo
+        });
+      } catch {}
+
+      saveLocalCache(cache);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent('approval-requests-updated'));
+      }
+      return { success: true, type: 'sale', sale: confirmedSale };
+
+    } else if (req.type === 'due_payment') {
+      const pData = req.paymentData;
+      if (!pData) {
+        throw new Error("পেমেন্টের তথ্য অসম্পূর্ণ।");
+      }
+
+      // Deduct customer due and record payment
+      const payResult = await api.recordPayment(
+        pData.customerId,
+        pData.amount,
+        pData.paymentMethod || "cash",
+        pData.note ? `${pData.note} (অনুমোদিত রিকুয়েস্ট: ${req.temporaryInvoiceNo})` : `অনুমোদিত বকেয়া আদায় (${req.temporaryInvoiceNo})`
+      );
+
+      req.status = 'approved';
+      req.reviewedAt = reviewedAt;
+      req.reviewedBy = reviewedBy;
+
+      try {
+        await updateDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId), {
+          status: 'approved',
+          reviewedAt,
+          reviewedBy
+        });
+      } catch {}
+
+      saveLocalCache(cache);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent('approval-requests-updated'));
+      }
+      return { success: true, type: 'due_payment', payment: payResult };
+    }
+  },
+
+  rejectRequest: async (requestId: string, reason?: string): Promise<any> => {
+    const curUser = getCurrentUser();
+    const cache = getLocalCache();
+    
+    let req = cache.approvalRequests.find(r => r.id === requestId);
+    if (!req) {
+      try {
+        const snap = await getDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId));
+        if (snap.exists()) req = snap.data() as ApprovalRequest;
+      } catch {}
+    }
+
+    if (!req) {
+      throw new Error("অনুরোধটি খুঁজে পাওয়া যায়নি।");
+    }
+
+    const reviewedAt = new Date().toISOString();
+    const reviewedBy = curUser?.name || "এডমিন";
+    const rejectReason = reason || "এডমিন কর্তৃক বাতিল করা হয়েছে";
+
+    req.status = 'rejected';
+    req.reviewedAt = reviewedAt;
+    req.reviewedBy = reviewedBy;
+    req.rejectReason = rejectReason;
+
+    // If temporary sale doc exists, mark it rejected
+    if (req.type === 'sale') {
+      const saleIdx = cache.sales.findIndex(s => s.id === requestId);
+      if (saleIdx !== -1) {
+        cache.sales[saleIdx].approvalStatus = 'rejected';
+      }
+      try {
+        await updateDoc(doc(db, "businesses", currentBusinessId, "sales", requestId), {
+          approvalStatus: 'rejected'
+        });
+      } catch {}
+    }
+
+    try {
+      await updateDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId), {
+        status: 'rejected',
+        reviewedAt,
+        reviewedBy,
+        rejectReason
+      });
+    } catch {}
+
+    saveLocalCache(cache);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent('approval-requests-updated'));
+    }
+    // Crucial: Products stock and customer balance remain completely unchanged!
+    return { success: true };
   },
 
   // --- Customers ---

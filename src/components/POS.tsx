@@ -284,27 +284,37 @@ export function POS({ user }: POSProps) {
     };
 
     try {
-      const createdSale = await api.createSale(sale);
-      setCart([]);
-      setPaidAmount(0);
-      
-      // Auto-trigger print with a notification
-      showNotify("বিক্রয় সফল হয়েছে! ইনভয়েস প্রিন্ট লেআউট তৈরি হচ্ছে...");
-      await printInvoice(createdSale);
+      if (!isAdmin) {
+        // Salesman mode: Generate Temporary Invoice / Approval Request
+        const { sale: createdTempSale } = await api.createSaleRequest(sale);
+        setCart([]);
+        setPaidAmount(0);
+        showNotify("টেম্পোরারি ইনভয়েস তৈরি হয়েছে! এডমিন অনুমোদন করলে এটি চূড়ান্ত হবে ও স্টক কমবে।", "success");
+        await printInvoice(createdTempSale, true);
+      } else {
+        // Admin mode: Instant confirmed Sale
+        const createdSale = await api.createSale(sale);
+        setCart([]);
+        setPaidAmount(0);
+        
+        // Auto-trigger print with a notification
+        showNotify("বিক্রয় সফল হয়েছে! ইনভয়েস প্রিন্ট লেআউট তৈরি হচ্ছে...");
+        await printInvoice(createdSale, false);
 
-      // Auto SMS logic
-      try {
-        const smsConfig = await api.getSMSConfig();
-        if (smsConfig.autoSMS && selectedCustomer && selectedCustomer.phone) {
-          const message = `প্রিয় ${selectedCustomer.name}, আপনার শপিং এর জন্য ধন্যবাদ। ইনভয়েস: ${createdSale.invoiceNo}, মোট: ৳${Math.round(createdSale.payableAmount)}, পেইড: ৳${createdSale.paidAmount}, বকেয়া: ৳${Math.round(createdSale.dueAmount)}।`;
-          await api.sendSMS(selectedCustomer.phone, message);
-          console.log("[Auto SMS] Sent to:", selectedCustomer.phone);
+        // Auto SMS logic
+        try {
+          const smsConfig = await api.getSMSConfig();
+          if (smsConfig.autoSMS && selectedCustomer && selectedCustomer.phone) {
+            const message = `প্রিয় ${selectedCustomer.name}, আপনার শপিং এর জন্য ধন্যবাদ। ইনভয়েস: ${createdSale.invoiceNo}, মোট: ৳${Math.round(createdSale.payableAmount)}, পেইড: ৳${createdSale.paidAmount}, বকেয়া: ৳${Math.round(createdSale.dueAmount)}।`;
+            await api.sendSMS(selectedCustomer.phone, message);
+            console.log("[Auto SMS] Sent to:", selectedCustomer.phone);
+          }
+        } catch (err) {
+          console.error("[Auto SMS] Error:", err);
         }
-      } catch (err) {
-        console.error("[Auto SMS] Error:", err);
       }
-    } catch (e) {
-      alert("বিক্রয় ব্যর্থ হয়েছে!");
+    } catch (e: any) {
+      alert(e.message || "বিক্রয় ব্যর্থ হয়েছে!");
     } finally {
       setIsSubmitting(false);
     }
@@ -695,7 +705,7 @@ export function POS({ user }: POSProps) {
             ) : (
               <>
                 <ShoppingCart size={20} />
-                {!canAddSale ? "পারমিশন নেই" : "ইনভয়েস সম্পন্ন করুন"}
+                {!canAddSale ? "পারমিশন নেই" : (!isAdmin ? "টেম্পোরারি ইনভয়েস তৈরি করুন" : "ইনভয়েস সম্পন্ন করুন")}
               </>
             )}
           </button>
