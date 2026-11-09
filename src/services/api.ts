@@ -1873,7 +1873,7 @@ export const api = {
   },
 
   getAllData: async (): Promise<any> => {
-    const [users, products, categories, customers, suppliers, sales, expenses, business] = await Promise.all([
+    const [users, products, categories, customers, suppliers, sales, expenses, business, approvalRequests] = await Promise.all([
       api.getUsers(),
       api.getProducts(),
       api.getCategories(),
@@ -1881,7 +1881,8 @@ export const api = {
       api.getSuppliers(),
       api.getSales(),
       api.getExpenses(),
-      api.getBusiness()
+      api.getBusiness(),
+      api.getApprovalRequests()
     ]);
 
     return {
@@ -1894,7 +1895,8 @@ export const api = {
       customers,
       suppliers,
       sales,
-      expenses
+      expenses,
+      approvalRequests
     };
   },
 
@@ -1907,48 +1909,69 @@ export const api = {
     try {
       if (Array.isArray(data.products)) {
         for (const p of data.products) {
-          if (p.id) await setDoc(doc(db, "businesses", currentBusinessId, "products", p.id), p);
+          if (p.id) await setDoc(doc(db, "businesses", currentBusinessId, "products", p.id), cleanForFirestore(p));
+        }
+      }
+      if (Array.isArray(data.categories)) {
+        for (const cat of data.categories) {
+          if (cat.id) await setDoc(doc(db, "businesses", currentBusinessId, "categories", cat.id), cleanForFirestore(cat));
         }
       }
       if (Array.isArray(data.customers)) {
         for (const c of data.customers) {
-          if (c.id) await setDoc(doc(db, "businesses", currentBusinessId, "customers", c.id), c);
+          if (c.id) await setDoc(doc(db, "businesses", currentBusinessId, "customers", c.id), cleanForFirestore(c));
         }
       }
       if (Array.isArray(data.suppliers)) {
         for (const s of data.suppliers) {
-          if (s.id) await setDoc(doc(db, "businesses", currentBusinessId, "suppliers", s.id), s);
+          if (s.id) await setDoc(doc(db, "businesses", currentBusinessId, "suppliers", s.id), cleanForFirestore(s));
         }
       }
       if (Array.isArray(data.sales)) {
         for (const s of data.sales) {
-          if (s.id) await setDoc(doc(db, "businesses", currentBusinessId, "sales", s.id), s);
+          if (s.id) await setDoc(doc(db, "businesses", currentBusinessId, "sales", s.id), cleanForFirestore(s));
         }
       }
       if (Array.isArray(data.expenses)) {
         for (const e of data.expenses) {
-          if (e.id) await setDoc(doc(db, "businesses", currentBusinessId, "expenses", e.id), e);
+          if (e.id) await setDoc(doc(db, "businesses", currentBusinessId, "expenses", e.id), cleanForFirestore(e));
+        }
+      }
+      if (Array.isArray(data.approvalRequests)) {
+        for (const req of data.approvalRequests) {
+          if (req.id) await setDoc(doc(db, "businesses", currentBusinessId, "approval_requests", req.id), cleanForFirestore(req));
         }
       }
       if (Array.isArray(data.users)) {
         for (const u of data.users) {
-          if (u.id) await setDoc(doc(db, "users", u.id), u, { merge: true });
+          if (u.id) await setDoc(doc(db, "users", u.id), cleanForFirestore(u), { merge: true });
         }
       }
       if (data.business) {
-        await setDoc(doc(db, "businesses", currentBusinessId), data.business, { merge: true });
+        await setDoc(doc(db, "businesses", currentBusinessId), cleanForFirestore(data.business), { merge: true });
       }
     } catch (fsErr) {
       console.warn("Firestore restore encountered warning:", fsErr);
     }
 
-    saveLocalCache(data);
+    const cache = getLocalCache();
+    if (data.products) cache.products = data.products;
+    if (data.categories) cache.categories = data.categories;
+    if (data.customers) cache.customers = data.customers;
+    if (data.suppliers) cache.suppliers = data.suppliers;
+    if (data.sales) cache.sales = data.sales;
+    if (data.expenses) cache.expenses = data.expenses;
+    if (data.approvalRequests) cache.approvalRequests = data.approvalRequests;
+    if (data.users && data.users.length > 0) cache.users = data.users;
+    if (data.business) cache.business = { ...cache.business, ...data.business };
+    saveLocalCache(cache);
+
     return { success: true };
   },
 
   clearAllData: async (): Promise<any> => {
     // 1. Delete Firestore collections
-    const collectionsToClear = ["products", "customers", "sales", "expenses", "suppliers", "categories", "sms_logs"];
+    const collectionsToClear = ["products", "customers", "sales", "expenses", "suppliers", "categories", "sms_logs", "approval_requests"];
     
     for (const colName of collectionsToClear) {
       try {
@@ -1965,7 +1988,7 @@ export const api = {
       const userSnap = await getDocs(collection(db, "users"));
       for (const uDoc of userSnap.docs) {
         const uData = uDoc.data();
-        if (uData.role !== 'admin' && uData.email !== 'mominkhan051220@gmail.com') {
+        if (uData.role !== 'admin' && uData.email !== 'mominkhan051220@gmail.com' && uData.email !== 'nahid521610@gmail.com') {
           await deleteDoc(uDoc.ref);
         }
       }
@@ -1975,7 +1998,7 @@ export const api = {
 
     // 3. Clear Local Cache (keep only Admin user)
     const cache = getLocalCache();
-    cache.users = (cache.users || []).filter(u => u.role === 'admin' || u.email === 'mominkhan051220@gmail.com');
+    cache.users = (cache.users || []).filter(u => u.role === 'admin' || u.email === 'mominkhan051220@gmail.com' || u.email === 'nahid521610@gmail.com');
     if (cache.users.length === 0) {
       cache.users = defaultDbData.users;
     }
@@ -1988,6 +2011,7 @@ export const api = {
     cache.sales = [];
     cache.expenses = [];
     cache.smsLogs = [];
+    cache.approvalRequests = [];
     saveLocalCache(cache);
 
     return { success: true };

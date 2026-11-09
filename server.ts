@@ -1162,11 +1162,72 @@ async function startServer() {
     res.json(db.smsConfig);
   });
 
-  // SMS Proxy to avoid CORS
+  // SSRF Protection Helpers
+  function isSafePublicHttpUrl(urlString: string): boolean {
+    try {
+      const parsed = new URL(urlString);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+      const hostname = parsed.hostname.toLowerCase();
+      // Block localhost, link-local, loopback, private ranges, cloud metadata
+      if (
+        hostname === 'localhost' ||
+        hostname === '127.0.0.1' ||
+        hostname === '0.0.0.0' ||
+        hostname === '::1' ||
+        hostname === '169.254.169.254' ||
+        hostname.startsWith('192.168.') ||
+        hostname.startsWith('10.') ||
+        hostname.startsWith('172.16.') ||
+        hostname.startsWith('172.17.') ||
+        hostname.startsWith('172.18.') ||
+        hostname.startsWith('172.19.') ||
+        hostname.startsWith('172.20.') ||
+        hostname.startsWith('172.21.') ||
+        hostname.startsWith('172.22.') ||
+        hostname.startsWith('172.23.') ||
+        hostname.startsWith('172.24.') ||
+        hostname.startsWith('172.25.') ||
+        hostname.startsWith('172.26.') ||
+        hostname.startsWith('172.27.') ||
+        hostname.startsWith('172.28.') ||
+        hostname.startsWith('172.29.') ||
+        hostname.startsWith('172.30.') ||
+        hostname.startsWith('172.31.') ||
+        hostname.endsWith('.internal') ||
+        hostname.endsWith('.local')
+      ) {
+        return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function isGoogleScriptUrl(urlString: string): boolean {
+    try {
+      const parsed = new URL(urlString);
+      if (parsed.protocol !== 'https:') return false;
+      const hostname = parsed.hostname.toLowerCase();
+      return (
+        hostname === 'script.google.com' ||
+        hostname === 'script.googleusercontent.com' ||
+        hostname.endsWith('.google.com')
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  // SMS Proxy to avoid CORS with SSRF safety check
   app.get("/api/sms/proxy", async (req, res) => {
     const { url } = req.query;
     if (!url || typeof url !== 'string') {
       return res.status(400).json({ error: "URL is required" });
+    }
+
+    if (!isSafePublicHttpUrl(url)) {
+      return res.status(403).json({ error: "নিরাপত্তার স্বার্থে এই URL এ রিকোয়েস্ট ব্লক করা হয়েছে (Invalid/Private destination)" });
     }
     
     try {
@@ -1177,12 +1238,10 @@ async function startServer() {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
       });
-      console.log("[SMS Proxy] Remote Response:", response.status, response.data);
       res.json(response.data);
     } catch (err: any) {
       const statusCode = err.response?.status || 500;
       const errorMsg = err.response?.data || err.message;
-      console.error(`[SMS Proxy] Error ${statusCode}:`, errorMsg);
       res.status(statusCode).json({ 
         error: errorMsg,
         status: statusCode,
@@ -1191,11 +1250,14 @@ async function startServer() {
     }
   });
 
-  // Google Sheets Proxy & Backend Sync
+  // Google Sheets Proxy & Backend Sync with SSRF check
   app.get("/api/sheets/proxy", async (req, res) => {
     const { url } = req.query;
     if (!url || typeof url !== 'string') {
       return res.status(400).json({ error: "URL is required" });
+    }
+    if (!isGoogleScriptUrl(url)) {
+      return res.status(403).json({ error: "শুধুমাত্র অফিশিয়াল Google Apps Script URL গ্রহণযোগ্য" });
     }
     try {
       const response = await axios.get(url, {
@@ -1211,8 +1273,11 @@ async function startServer() {
 
   app.post("/api/sheets/sync", async (req, res) => {
     const { targetUrl, payload } = req.body;
-    if (!targetUrl) {
+    if (!targetUrl || typeof targetUrl !== 'string') {
       return res.status(400).json({ error: "Target Google Apps Script URL is required" });
+    }
+    if (!isGoogleScriptUrl(targetUrl)) {
+      return res.status(403).json({ error: "শুধুমাত্র অফিশিয়াল Google Apps Script URL এ সিঙ্ক করা অনুমোদিত" });
     }
     try {
       const response = await axios.post(targetUrl, JSON.stringify(payload), {
@@ -1341,134 +1406,11 @@ async function startServer() {
     res.json({ success: true, message: "ইমেইল ব্যাকআপের পরিবর্তে সরাসরি গুগল ড্রাইভ ব্যাকআপ ব্যবহার করা হচ্ছে।" });
   });
 
-  // Clear Data Route (for testing restore) - FIRESTORE ONLY
+  // Clear Data Route - Disabled for production security
   app.post("/api/debug/clear-all-data", async (req, res) => {
-    const firestore = getFirestoreInstance();
-    if (!firestore) {
-      console.error("[DEBUG] Clear failed: Firestore instance is null");
-      return res.status(500).json({ error: "ফায়ারস্টোর ডাটাবেস পাওয়া যায়নি" });
-    }
-    const { businessId, adminSecret } = req.body;
-    if (!businessId) {
-       console.error("[DEBUG] Clear failed: businessId is missing in request body");
-       return res.status(400).json({ error: "বিজনেস আইডি পাওয়া যায়নি" });
-    }
-    if (adminSecret !== BACKUP_SECRET) {
-       console.warn("[DEBUG] Clear rejected: Invalid admin secret provided");
-       return res.status(403).json({ error: "অননুমোদিত অনুরোধ। সঠিক এডমিন সিক্রেট টোকেন প্রয়োজন।" });
-    }
-
-    const report: string[] = [];
-    const errors: string[] = [];
-
-    try {
-      console.log(`[DEBUG] !!! FULL WIPE STARTING for business: ${businessId} !!!`);
-      const collections = ["products", "customers", "sales", "expenses", "categories", "suppliers", "sms_logs"];
-      const businessRef = firestore.collection("businesses").doc(businessId);
-
-      // Check if firestore is truly reachable
-      try {
-        // Just a simple ping to see if we can talk to the database
-        await firestore.listCollections(); 
-        console.log("[DEBUG] Firestore connection verified.");
-      } catch (connErr: any) {
-        console.error("[DEBUG] Firestore connection test failed:", connErr.message);
-        return res.status(500).json({ 
-          error: "ফায়ারস্টোর ডাটাবেসে কানেক্ট করা যাচ্ছে না",
-          details: connErr.message,
-          database: FIRESTORE_DATABASE_ID
-        });
-      }
-
-      for (const colName of collections) {
-        try {
-          console.log(`[DEBUG] Wiping collection: ${colName}`);
-          const colRef = businessRef.collection(colName);
-          const snapshot = await colRef.get();
-          
-          if (snapshot.empty) {
-            console.log(`[DEBUG] Collection ${colName} is already empty.`);
-            report.push(`${colName}: empty`);
-            continue;
-          }
-
-          console.log(`[DEBUG] Found ${snapshot.size} documents in ${colName}`);
-
-          // Helper for batching deletions in subcollections
-          const wipeSubcollection = async (docRef: any, subColName: string) => {
-            try {
-              const subSnap = await docRef.collection(subColName).get();
-              if (subSnap.empty) return;
-              
-              console.log(`[DEBUG] Deleting ${subSnap.size} docs from nested ${subColName}`);
-              const bSize = 500;
-              for (let i = 0; i < subSnap.docs.length; i += bSize) {
-                const b = firestore.batch();
-                subSnap.docs.slice(i, i + bSize).forEach((p: any) => b.delete(p.ref));
-                await b.commit();
-              }
-            } catch (subErr: any) {
-              console.error(`[DEBUG] Failed to wipe subcollection ${subColName}:`, subErr.message);
-            }
-          };
-
-          // Handle Nested Sub-collections first for specific collections
-          for (const doc of snapshot.docs) {
-            if (colName === 'customers') {
-                await wipeSubcollection(doc.ref, 'payments');
-            }
-            if (colName === 'suppliers') {
-                await wipeSubcollection(doc.ref, 'transactions');
-            }
-          }
-
-          // Now delete main collection docs
-          const batchSize = 500;
-          for (let i = 0; i < snapshot.docs.length; i += batchSize) {
-            const batch = firestore.batch();
-            snapshot.docs.slice(i, i + batchSize).forEach((doc: any) => {
-              batch.delete(doc.ref);
-            });
-            await batch.commit();
-          }
-          console.log(`[DEBUG] Successfully wiped ${colName}`);
-          report.push(`${colName}: wiped ${snapshot.size}`);
-        } catch (colErr: any) {
-          console.error(`[DEBUG] Error wiping ${colName}:`, colErr.message);
-          errors.push(`${colName}: ${colErr.message}`);
-        }
-      }
-      
-      // Also clear db.json items if they exist
-      try {
-        console.log("[DEBUG] Wiping local db.json data...");
-        const db = getDB();
-        db.products = [];
-        db.customers = [];
-        db.sales = [];
-        db.expenses = [];
-        db.suppliers = [];
-        db.transactions = [];
-        db.smsLogs = [];
-        if (db.categories) db.categories = [];
-        saveDB(db);
-        report.push("local_db: wiped");
-      } catch (dbErr: any) {
-        console.error("[DEBUG] Local DB wipe failed:", dbErr.message);
-        errors.push(`local_db: ${dbErr.message}`);
-      }
-
-      console.log("[DEBUG] Wipe process finished for", businessId);
-      res.json({ 
-        success: errors.length === 0, 
-        message: errors.length === 0 ? "সকল ডাটা সফলভাবে মুছে ফেলা হয়েছে।" : "কিছু ডাটা মুছতে সমস্যা হয়েছে।",
-        report,
-        errors: errors.length > 0 ? errors : undefined
-      });
-    } catch (err: any) {
-      console.error("[DEBUG] Clear data process CRASHED:", err.message);
-      res.status(500).json({ error: `ডাটা মুছতে গিয়ে সার্ভার ক্রাশ করেছে: ${err.message}` });
-    }
+    return res.status(403).json({ 
+      error: "নিরাপত্তার স্বার্থে সরাসরি ডাটা ওয়াইপ রুটটি বন্ধ রাখা হয়েছে। কোনো ডাটা মুছতে হলে অ্যাডমিন ড্যাশবোর্ড থেকে অনুমোদিত প্রক্রিয়ায় করতে হবে।" 
+    });
   });
 
   // Vite setup

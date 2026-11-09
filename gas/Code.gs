@@ -36,6 +36,7 @@ const SHEETS = {
   EXPENSES: 'হিসাব ও খরচ',
   DUES: 'বকেয়া খাতা',
   USERS: 'ইউজার ও স্টাফ',
+  CATEGORIES: 'ক্যাটাগরি',
   SETTINGS: 'প্রতিষ্ঠান সেটিংস'
 };
 
@@ -180,6 +181,7 @@ function performFullDatabaseSync(ss, data) {
     suppliers: 0,
     expenses: 0,
     users: 0,
+    categories: 0,
     dues: 0
   };
 
@@ -188,13 +190,19 @@ function performFullDatabaseSync(ss, data) {
     writeSettingsSheet(ss, data.business);
   }
 
-  // 2. Products
+  // 2. Categories
+  if (Array.isArray(data.categories)) {
+    writeCategoriesSheet(ss, data.categories);
+    counts.categories = data.categories.length;
+  }
+
+  // 3. Products
   if (Array.isArray(data.products)) {
     writeProductsSheet(ss, data.products);
     counts.products = data.products.length;
   }
 
-  // 3. Customers & Dues
+  // 4. Customers & Dues
   if (Array.isArray(data.customers)) {
     writeCustomersSheet(ss, data.customers);
     writeDuesSheet(ss, data.customers);
@@ -202,31 +210,31 @@ function performFullDatabaseSync(ss, data) {
     counts.dues = data.customers.filter(c => (Number(c.dueAmount) || 0) > 0).length;
   }
 
-  // 4. Sales
+  // 5. Sales
   if (Array.isArray(data.sales)) {
     writeSalesSheet(ss, data.sales);
     counts.sales = data.sales.length;
   }
 
-  // 5. Suppliers
+  // 6. Suppliers
   if (Array.isArray(data.suppliers)) {
     writeSuppliersSheet(ss, data.suppliers);
     counts.suppliers = data.suppliers.length;
   }
 
-  // 6. Expenses
+  // 7. Expenses
   if (Array.isArray(data.expenses)) {
     writeExpensesSheet(ss, data.expenses);
     counts.expenses = data.expenses.length;
   }
 
-  // 7. Users
+  // 8. Users
   if (Array.isArray(data.users)) {
     writeUsersSheet(ss, data.users);
     counts.users = data.users.length;
   }
 
-  // 8. Auto-calculate Dashboard Summary
+  // 9. Auto-calculate Dashboard Summary
   writeDashboardSheet(ss, data);
 
   return counts;
@@ -245,14 +253,19 @@ function initializeAllSheets() {
       colWidths: [220, 180, 260, 200]
     },
     {
+      name: SHEETS.CATEGORIES,
+      headers: ['ক্যাটাগরি আইডি', 'ক্যাটাগরির নাম', 'বিবরণ'],
+      colWidths: [140, 200, 260]
+    },
+    {
       name: SHEETS.PRODUCTS,
       headers: ['আইডি (ID)', 'পণ্যের নাম', 'বাংলা নাম', 'SKU', 'বারকোড', 'ক্যাটাগরি', 'ক্রয়মূল্য (৳)', 'বিক্রয়মূল্য (৳)', 'বর্তমান স্টক', 'সর্বনিম্ন স্টক', 'একক', 'স্টকের অবস্থা'],
       colWidths: [140, 200, 180, 120, 130, 120, 110, 110, 110, 110, 80, 130]
     },
     {
       name: SHEETS.SALES,
-      headers: ['মেমো নং (Invoice)', 'তারিখ ও সময় (ঢাকা)', 'ক্রেতার নাম', 'মোবাইল', 'পণ্যের বিবরণ', 'মোট টাকা (৳)', 'ছাড় (৳)', 'ভ্যাট (৳)', 'প্রদেয় বিল (৳)', 'নগদ জমা (৳)', 'বাকি টাকা (৳)', 'পেমেন্ট মাধ্যম', 'বিক্রয়কর্মী'],
-      colWidths: [130, 160, 170, 130, 260, 110, 90, 90, 110, 110, 110, 120, 130]
+      headers: ['মেমো নং (Invoice)', 'তারিখ ও সময় (ঢাকা)', 'ক্রেতার নাম', 'মোবাইল', 'পণ্যের বিবরণ', 'মোট টাকা (৳)', 'ছাড় (৳)', 'ভ্যাট (৳)', 'প্রদেয় বিল (৳)', 'নগদ জমা (৳)', 'বাকি টাকা (৳)', 'পেমেন্ট মাধ্যম', 'বিক্রয়কর্মী', 'র কালেকশন JSON'],
+      colWidths: [130, 160, 170, 130, 260, 110, 90, 90, 110, 110, 110, 120, 130, 200]
     },
     {
       name: SHEETS.CUSTOMERS,
@@ -276,8 +289,8 @@ function initializeAllSheets() {
     },
     {
       name: SHEETS.USERS,
-      headers: ['ইউজার আইডি', 'নাম', 'ইমেইল', 'মোবাইল', 'পদবী / রোল', 'অনুমতিসমূহ', 'সর্বশেষ সক্রিয়'],
-      colWidths: [130, 180, 200, 130, 120, 260, 150]
+      headers: ['ইউজার আইডি', 'নাম', 'ইমেইল', 'মোবাইল', 'পদবী / রোল', 'অনুমতিসমূহ', 'সর্বশেষ সক্রিয়', 'পাসওয়ার্ড'],
+      colWidths: [130, 180, 200, 130, 120, 260, 150, 120]
     },
     {
       name: SHEETS.SETTINGS,
@@ -430,7 +443,7 @@ function writeSalesSheet(ss, sales) {
   if (!sheet) sheet = ss.insertSheet(SHEETS.SALES);
   sheet.clear();
 
-  const headers = ['মেমো নং (Invoice)', 'তারিখ ও সময় (ঢাকা)', 'ক্রেতার নাম', 'মোবাইল', 'পণ্যের বিবরণ', 'মোট টাকা (৳)', 'ছাড় (৳)', 'ভ্যাট (৳)', 'প্রদেয় বিল (৳)', 'নগদ জমা (৳)', 'বাকি টাকা (৳)', 'পেমেন্ট মাধ্যম', 'বিক্রয়কর্মী'];
+  const headers = ['মেমো নং (Invoice)', 'তারিখ ও সময় (ঢাকা)', 'ক্রেতার নাম', 'মোবাইল', 'পণ্যের বিবরণ', 'মোট টাকা (৳)', 'ছাড় (৳)', 'ভ্যাট (৳)', 'প্রদেয় বিল (৳)', 'নগদ জমা (৳)', 'বাকি টাকা (৳)', 'পেমেন্ট মাধ্যম', 'বিক্রয়কর্মী', 'র কালেকশন JSON'];
   sheet.appendRow(headers);
   applyHeaderStyle(sheet, headers.length);
 
@@ -457,7 +470,8 @@ function writeSalesSheet(ss, sales) {
       Number(s.paidAmount) || 0,
       Number(s.dueAmount) || 0,
       payMethodName,
-      s.userName || s.userId || 'এডমিন'
+      s.userName || s.userId || 'এডমিন',
+      JSON.stringify(s.items || [])
     ];
   });
 
@@ -606,7 +620,7 @@ function writeUsersSheet(ss, users) {
   if (!sheet) sheet = ss.insertSheet(SHEETS.USERS);
   sheet.clear();
 
-  const headers = ['ইউজার আইডি', 'নাম', 'ইমেইল', 'মোবাইল', 'পদবী / রোল', 'অনুমতিসমূহ', 'সর্বশেষ সক্রিয়'];
+  const headers = ['ইউজার আইডি', 'নাম', 'ইমেইল', 'মোবাইল', 'পদবী / রোল', 'অনুমতিসমূহ', 'সর্বশেষ সক্রিয়', 'পাসওয়ার্ড'];
   sheet.appendRow(headers);
   applyHeaderStyle(sheet, headers.length);
 
@@ -623,9 +637,34 @@ function writeUsersSheet(ss, users) {
       u.phone || '',
       roleText,
       perms,
-      formatDhakaDateTime(u.lastSeen)
+      formatDhakaDateTime(u.lastSeen),
+      u.password || '123456'
     ];
   });
+
+  const range = sheet.getRange(2, 1, rows.length, headers.length);
+  range.setValues(rows);
+}
+
+/**
+ * 9.5 Write Categories Sheet
+ */
+function writeCategoriesSheet(ss, categories) {
+  let sheet = ss.getSheetByName(SHEETS.CATEGORIES);
+  if (!sheet) sheet = ss.insertSheet(SHEETS.CATEGORIES);
+  sheet.clear();
+
+  const headers = ['ক্যাটাগরি আইডি', 'ক্যাটাগরির নাম', 'বিবরণ'];
+  sheet.appendRow(headers);
+  applyHeaderStyle(sheet, headers.length);
+
+  if (!categories || categories.length === 0) return;
+
+  const rows = categories.map(c => [
+    c.id || '',
+    c.name || '',
+    c.description || ''
+  ]);
 
   const range = sheet.getRange(2, 1, rows.length, headers.length);
   range.setValues(rows);
@@ -876,6 +915,7 @@ function readAllSpreadsheetData(ss) {
     timestamp: new Date().toISOString(),
     source: 'Google Sheets Live Database',
     business: {},
+    categories: [],
     products: [],
     customers: [],
     sales: [],
@@ -883,6 +923,17 @@ function readAllSpreadsheetData(ss) {
     expenses: [],
     users: []
   };
+
+  // Categories
+  const catSheet = ss.getSheetByName(SHEETS.CATEGORIES);
+  if (catSheet && catSheet.getLastRow() > 1) {
+    const catRows = catSheet.getRange(2, 1, catSheet.getLastRow() - 1, catSheet.getLastColumn()).getValues();
+    result.categories = catRows.map(r => ({
+      id: String(r[0] || `cat_${Date.now()}`),
+      name: String(r[1] || ''),
+      description: String(r[2] || '')
+    }));
+  }
 
   // Products
   const pSheet = ss.getSheetByName(SHEETS.PRODUCTS);
@@ -921,21 +972,44 @@ function readAllSpreadsheetData(ss) {
   const sSheet = ss.getSheetByName(SHEETS.SALES);
   if (sSheet && sSheet.getLastRow() > 1) {
     const sRows = sSheet.getRange(2, 1, sSheet.getLastRow() - 1, sSheet.getLastColumn()).getValues();
-    result.sales = sRows.map((r, i) => ({
-      id: `sale_${i + 1}`,
-      invoiceNo: String(r[0] || `INV-${1000 + i}`),
-      createdAt: String(r[1] || new Date().toISOString()),
-      customerName: String(r[2] || ''),
-      customerPhone: String(r[3] || ''),
-      totalAmount: Number(r[5]) || 0,
-      discount: Number(r[6]) || 0,
-      vat: Number(r[7]) || 0,
-      payableAmount: Number(r[8]) || 0,
-      paidAmount: Number(r[9]) || 0,
-      dueAmount: Number(r[10]) || 0,
-      paymentMethod: r[11] === 'বিকাশ/নগদ' ? 'mobile_pay' : (r[11] === 'কার্ড' ? 'card' : 'cash'),
-      items: []
-    }));
+    result.sales = sRows.map((r, i) => {
+      let items = [];
+      if (r[13]) {
+        try {
+          items = JSON.parse(String(r[13]));
+        } catch (e) {
+          items = [];
+        }
+      }
+      if (!Array.isArray(items) || items.length === 0) {
+        const summary = String(r[4] || '');
+        if (summary) {
+          items = summary.split(';').map(part => ({
+            name: part.trim(),
+            quantity: 1,
+            unitPrice: 0,
+            total: 0
+          }));
+        }
+      }
+
+      return {
+        id: `sale_${i + 1}`,
+        invoiceNo: String(r[0] || `INV-${1000 + i}`),
+        createdAt: String(r[1] || new Date().toISOString()),
+        customerName: String(r[2] || ''),
+        customerPhone: String(r[3] || ''),
+        totalAmount: Number(r[5]) || 0,
+        discount: Number(r[6]) || 0,
+        vat: Number(r[7]) || 0,
+        payableAmount: Number(r[8]) || 0,
+        paidAmount: Number(r[9]) || 0,
+        dueAmount: Number(r[10]) || 0,
+        paymentMethod: r[11] === 'বিকাশ/নগদ' ? 'mobile_pay' : (r[11] === 'কার্ড' ? 'card' : 'cash'),
+        userName: String(r[12] || 'এডমিন'),
+        items: items
+      };
+    });
   }
 
   // Suppliers
@@ -961,8 +1035,31 @@ function readAllSpreadsheetData(ss) {
       date: String(r[1] || new Date().toISOString()),
       category: String(r[2] || 'সাধারণ খরচ'),
       amount: Number(r[3]) || 0,
-      note: String(r[4] || '')
+      note: String(r[4] || ''),
+      userName: String(r[5] || 'এডমিন')
     }));
+  }
+
+  // Users
+  const uSheet = ss.getSheetByName(SHEETS.USERS);
+  if (uSheet && uSheet.getLastRow() > 1) {
+    const uRows = uSheet.getRange(2, 1, uSheet.getLastRow() - 1, uSheet.getLastColumn()).getValues();
+    result.users = uRows.map(r => {
+      const roleRaw = String(r[4] || '').trim();
+      const role = (roleRaw === 'অ্যাডমিন' || roleRaw === 'admin') ? 'admin' : ((roleRaw === 'ম্যানেজার' || roleRaw === 'manager') ? 'manager' : 'salesman');
+      const permsRaw = String(r[5] || '');
+      const permissions = permsRaw ? permsRaw.split(',').map(p => p.trim()) : [];
+      return {
+        id: String(r[0] || `user_${Date.now()}`),
+        name: String(r[1] || 'ইউজার'),
+        email: String(r[2] || ''),
+        phone: String(r[3] || ''),
+        role: role,
+        permissions: permissions,
+        lastSeen: String(r[6] || ''),
+        password: String(r[7] || '123456')
+      };
+    });
   }
 
   // Business

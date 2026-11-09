@@ -167,24 +167,20 @@ service cloud.firestore {
       allow list: if true; // Required for unauthenticated email-based queries during login
       
       allow create: if isValidUser(incoming()) && (
-        !exists(/databases/$(database)/documents/users/$(userId)) || 
-        !isSignedIn() ||
-        isAdmin()
+        isAdmin() ||
+        (incoming().role != 'admin' && !exists(/databases/$(database)/documents/users/$(userId)))
       );
       
       allow update: if isValidUser(incoming()) && (
-        !isSignedIn() || (
-          isSignedIn() && (
-            isAdmin() || (
-              request.auth.uid == userId && 
-              incoming().role == existing().role && 
-              incoming().businessId == existing().businessId
-            )
-          )
+        isAdmin() || (
+          isSignedIn() &&
+          request.auth.uid == userId && 
+          incoming().role == existing().role && 
+          incoming().businessId == existing().businessId
         )
       );
       
-      allow delete: if !isSignedIn() || isAdmin();
+      allow delete: if isSignedIn() && isAdmin();
     }
 
     // 2. Business Data and Subcollections

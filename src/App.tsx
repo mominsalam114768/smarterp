@@ -9,7 +9,7 @@ import { Sidebar } from "./components/Sidebar";
 import { MobileNav } from "./components/MobileNav";
 import { Header } from "./components/Header";
 import { Product, Customer, Sale, User, Business } from "./types";
-import { Printer, X, Download, FileText, Building2, Mail, Lock, ArrowRight, Loader2, User as UserIcon, Phone, ShieldCheck, Sparkles } from "lucide-react";
+import { Printer, X, Download, FileText, Building2, Mail, Lock, ArrowRight, Loader2, User as UserIcon, Phone, ShieldCheck, Sparkles, Eye, EyeOff } from "lucide-react";
 // @ts-ignore - html2pdf doesn't have built-in types
 import html2pdf from 'html2pdf.js';
 import { setApiBusinessId, api } from "./services/api";
@@ -60,6 +60,7 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [regName, setRegName] = useState("");
   const [regPhone, setRegPhone] = useState("");
@@ -540,13 +541,21 @@ export default function App() {
                     <div className="relative group">
                       <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-600 transition-colors" size={18} />
                       <input
-                        type="password"
+                        type={showPassword ? "text" : "password"}
                         required
                         value={loginPassword}
                         onChange={(e) => setLoginPassword(e.target.value)}
                         placeholder="আপনার পাসওয়ার্ড লিখুন"
-                        className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl py-3.5 pl-12 pr-4 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 focus:bg-white dark:focus:bg-slate-700 transition-all placeholder:text-slate-400"
+                        className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl py-3.5 pl-12 pr-12 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 focus:bg-white dark:focus:bg-slate-700 transition-all placeholder:text-slate-400"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg transition-colors focus:outline-none"
+                        title={showPassword ? "পাসওয়ার্ড লুকান" : "পাসওয়ার্ড দেখুন"}
+                      >
+                        {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
                     </div>
                   </div>
 
@@ -565,46 +574,6 @@ export default function App() {
                     )}
                   </button>
                 </form>
-
-                {/* Quick Fill / Demo Credentials Card */}
-                <div className="mt-6 pt-5 border-t border-slate-100 dark:border-slate-800 text-left">
-                  <div className="flex items-center gap-2 mb-3">
-                    <ShieldCheck size={16} className="text-emerald-500" />
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300 font-bengali">অ্যাডমিন লগইন তথ্য:</span>
-                  </div>
-                  
-                  <div className="bg-slate-50 dark:bg-slate-800/80 p-3.5 rounded-2xl border border-slate-200/80 dark:border-slate-700 space-y-2 text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-500 dark:text-slate-400 font-bengali">ইমেইল:</span>
-                      <code className="bg-white dark:bg-slate-900 px-2 py-0.5 rounded text-blue-600 dark:text-blue-400 font-mono font-bold select-all">
-                        mominkhan051220@gmail.com
-                      </code>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-500 dark:text-slate-400 font-bengali">পাসওয়ার্ড:</span>
-                      <code className="bg-white dark:bg-slate-900 px-2 py-0.5 rounded text-emerald-600 dark:text-emerald-400 font-mono font-bold select-all">
-                        Momin1234@
-                      </code>
-                    </div>
-                    <div className="pt-2 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleFillCredentials("mominkhan051220@gmail.com", "Momin1234@")}
-                        className="flex-1 py-1.5 px-2 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 rounded-xl font-bold font-bengali transition text-center"
-                      >
-                        ১-ক্লিকে ফিল করুন
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleFillCredentials("md.momin.khan7579@gmail.com", "Momin1234@")}
-                        className="py-1.5 px-2.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 rounded-xl font-bold font-bengali transition text-center"
-                        title="md.momin.khan7579@gmail.com"
-                      >
-                        বিকল্প ইমেইল
-                      </button>
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
           </motion.div>

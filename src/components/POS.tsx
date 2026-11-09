@@ -33,7 +33,6 @@ export function POS({ user }: POSProps) {
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error'} | null>(null);
   
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
-  const [showDueConfirmModal, setShowDueConfirmModal] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [newCustomerFormData, setNewCustomerFormData] = useState({
     name: "",
@@ -243,19 +242,19 @@ export function POS({ user }: POSProps) {
     const customerId = forceCustomer ? forceCustomer.id : selectedCustomerId;
     const selectedCustomer = forceCustomer || customers.find(c => c.id === customerId);
     
-    // Rule: Walk-in (Cash) customer cannot have due
-    if (!customerId && due > 0) {
-      setShowDueConfirmModal(true);
+    // Rule: Must select an enrolled customer (Cash / Walk-in without customer is prohibited)
+    if (!customerId || !selectedCustomer) {
+      showNotify("ক্যাশ ক্রেতা প্রযোজ্য নয়! বিক্রয় করতে অবশ্যই তালিকা থেকে ক্রেতা নির্বাচন করুন অথবা '+' দিয়ে নতুন ক্রেতা যোগ করুন।", "error");
       return;
     }
 
     setIsSubmitting(true);
     
     const sale = {
-      customerId: customerId || "walking",
-      customerName: selectedCustomer ? selectedCustomer.name : "Walk-in Customer",
-      customerPhone: selectedCustomer ? selectedCustomer.phone : "",
-      customerAddress: selectedCustomer ? selectedCustomer.address : "",
+      customerId: selectedCustomer.id,
+      customerName: selectedCustomer.name,
+      customerPhone: selectedCustomer.phone || "",
+      customerAddress: selectedCustomer.address || "",
       userId: user?.id || "1",
       invoiceNo: `INV-${Date.now().toString().slice(-6)}`,
       totalAmount: cartSubtotal,
@@ -475,24 +474,43 @@ export function POS({ user }: POSProps) {
             <button className="text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 transition-colors bg-slate-50 dark:bg-slate-800 p-2 rounded-xl" onClick={() => setCart([])}><Trash2 size={20} /></button>
           </div>
           
-          <div className="flex gap-2">
-            <select 
-              className="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 rounded-lg px-3 py-2 font-bengali text-sm outline-none focus:ring-2 focus:ring-primary/20 appearance-none"
-              value={selectedCustomerId}
-              onChange={e => setSelectedCustomerId(e.target.value)}
-            >
-              <option value="">ক্যাশ ক্রেতা (Walk-in Customer)</option>
-              {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.phone})</option>)}
-            </select>
-            <button 
-              onClick={() => {
-                setNewCustomerFormData({ name: "", phone: "", address: "" });
-                setShowAddCustomerModal(true);
-              }}
-              className="p-2 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
-            >
-              <UserPlus size={20} />
-            </button>
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 font-bengali">
+                ক্রেতা নির্বাচন <span className="text-rose-500">*</span>:
+              </label>
+              <span className="text-[11px] text-slate-400 font-bengali">তালিকাভুক্ত ক্রেতা প্রয়োজন</span>
+            </div>
+            <div className="flex gap-2">
+              <select 
+                className={cn(
+                  "flex-1 bg-slate-50 dark:bg-slate-800 border text-slate-800 dark:text-slate-100 rounded-xl px-3 py-2.5 font-bengali text-sm outline-none transition-all appearance-none",
+                  !selectedCustomerId 
+                    ? "border-rose-300 dark:border-rose-800 focus:ring-2 focus:ring-rose-400/20 bg-rose-50/30 dark:bg-rose-950/20" 
+                    : "border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500/20"
+                )}
+                value={selectedCustomerId}
+                onChange={e => setSelectedCustomerId(e.target.value)}
+              >
+                <option value="">-- ক্রেতা নির্বাচন করুন (বাধ্যতামূলক) --</option>
+                {customers.map(c => <option key={c.id} value={c.id}>{c.name} {c.phone ? `(${c.phone})` : ''}</option>)}
+              </select>
+              <button 
+                onClick={() => {
+                  setNewCustomerFormData({ name: "", phone: "", address: "" });
+                  setShowAddCustomerModal(true);
+                }}
+                className="p-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors shrink-0 shadow-md shadow-blue-500/10"
+                title="নতুন ক্রেতা যুক্ত করুন"
+              >
+                <UserPlus size={18} />
+              </button>
+            </div>
+            {!selectedCustomerId && (
+              <p className="text-[11px] text-rose-500 font-semibold font-bengali mt-0.5">
+                ⚠️ ক্যাশ ক্রেতা গ্রহণযোগ্য নয়। শুধুমাত্র যোগ করা ক্রেতার কাছেই বিক্রি করা যাবে।
+              </p>
+            )}
           </div>
         </div>
 
@@ -697,7 +715,7 @@ export function POS({ user }: POSProps) {
 
           <button 
             onClick={() => handleCheckout()}
-            disabled={cart.length === 0 || !canAddSale || isSubmitting}
+            disabled={cart.length === 0 || !canAddSale || isSubmitting || !selectedCustomerId}
             className="w-full bg-blue-600 text-white font-black py-4 rounded-xl flex items-center justify-center gap-3 shadow-xl shadow-blue-200 hover:bg-blue-700 active:scale-[0.98] transition-all disabled:grayscale disabled:opacity-50 font-bengali text-lg"
           >
             {isSubmitting ? (
@@ -705,7 +723,13 @@ export function POS({ user }: POSProps) {
             ) : (
               <>
                 <ShoppingCart size={20} />
-                {!canAddSale ? "পারমিশন নেই" : (!isAdmin ? "টেম্পোরারি ইনভয়েস তৈরি করুন" : "ইনভয়েস সম্পন্ন করুন")}
+                {!canAddSale 
+                  ? "পারমিশন নেই" 
+                  : (!selectedCustomerId 
+                    ? "ক্রেতা নির্বাচন করুন" 
+                    : (!isAdmin ? "টেম্পোরারি ইনভয়েস তৈরি করুন" : "ইনভয়েস সম্পন্ন করুন")
+                  )
+                }
               </>
             )}
           </button>
@@ -741,45 +765,6 @@ export function POS({ user }: POSProps) {
                setShowScanner(false);
             }} 
           />
-        )}
-      </AnimatePresence>
-
-      {/* Due Confirmation Modal for Walk-in Customers */}
-      <AnimatePresence>
-        {showDueConfirmModal && (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-sm w-full shadow-2xl text-center border border-slate-100 dark:border-slate-800"
-            >
-              <div className="w-16 h-16 bg-amber-50 dark:bg-amber-900/20 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-4">
-                <UserPlus size={32} />
-              </div>
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white font-bengali mb-2">কাস্টমার যুক্ত করুন</h3>
-              <p className="text-slate-500 dark:text-slate-400 font-bengali mb-6 text-sm">
-                ক্যাশ ক্রেতা বা অজ্ঞাত ক্রেতার ক্ষেত্রে বকেয়া রাখা সম্ভব নয়। আপনি কি এই ইনভয়েসের জন্য নতুন কাস্টমার যুক্ত করতে চান?
-              </p>
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => setShowDueConfirmModal(false)}
-                  className="flex-1 py-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl font-bold font-bengali hover:bg-slate-200 dark:hover:bg-slate-700 transition-all text-sm"
-                >
-                  না, থাক
-                </button>
-                <button 
-                  onClick={() => {
-                    setShowDueConfirmModal(false);
-                    setShowAddCustomerModal(true);
-                  }}
-                  className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold font-bengali hover:bg-blue-700 shadow-lg shadow-blue-900/20 transition-all text-sm"
-                >
-                  হ্যাঁ, যুক্ত করুন
-                </button>
-              </div>
-            </motion.div>
-          </div>
         )}
       </AnimatePresence>
 
