@@ -1,0 +1,10 @@
+{
+  "name": "Remix HishabPati ERP permission",
+  "description": "A professional Bangladeshi ERP \u0026 POS SaaS solution for business management, inventory tracking, and accounting.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

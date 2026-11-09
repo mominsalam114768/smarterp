@@ -1,0 +1,55 @@
+{
+  "users": [
+    {
+      "id": "admin-1",
+      "name": "মোঃ মমিন আলী",
+      "email": "mominkhan051220@gmail.com",
+      "phone": "01741456838",
+      "password": "Momin1234@",
+      "role": "admin",
+      "permissions": [
+        "dashboard",
+        "pos",
+        "sales",
+        "add_sale",
+        "delete_sale",
+        "products",
+        "add_product",
+        "delete_product",
+        "customers",
+        "add_customer",
+        "delete_customer",
+        "suppliers",
+        "accounting",
+        "due",
+        "sms",
+        "reports",
+        "users",
+        "settings"
+      ],
+      "businessId": "main-business",
+      "createdAt": "2026-11-07T17:01:13.029Z",
+      "lastSeen": "2026-11-08T22:30:00.000Z"
+    }
+  ],
+  "products": [],
+  "categories": [],
+  "customers": [],
+  "suppliers": [],
+  "sales": [],
+  "expenses": [],
+  "transactions": [],
+  "smsLogs": [],
+  "smsConfig": {
+    "apiKey": "",
+    "senderId": "",
+    "provider": "Default"
+  },
+  "business": {
+    "name": "হিসাব পাতি",
+    "currency": "৳",
+    "address": "ঢাকা, বাংলাদেশ",
+    "phone": "01741456838",
+    "theme": "light"
+  }
+}

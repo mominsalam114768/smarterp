@@ -1,0 +1,224 @@
+{
+  "entities": {
+    "Business": {
+      "title": "Business",
+      "description": "Represents a business/shop in the system.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the business" },
+        "address": { "type": "string", "description": "Physical address" },
+        "phone": { "type": "string", "description": "Contact phone number" },
+        "currency": { "type": "string", "description": "Currency code (e.g., BDT)" },
+        "logo": { "type": "string", "description": "Logo data or URL" },
+        "logoUrl": { "type": "string", "description": "URL to the business logo" },
+        "backupEmail": { "type": "string", "description": "Email for automated backups" },
+        "defaultPrinter": { "type": "string", "description": "Default printer format (thermal or a4)" },
+        "theme": { "type": "string", "description": "UI theme (light or dark)" },
+        "smtpConfig": { "type": "object", "description": "SMTP configuration for email backups" }
+      },
+      "required": ["name"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "An item for sale.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "bnName": { "type": "string" },
+        "sku": { "type": "string" },
+        "barcode": { "type": "string" },
+        "barcodes": { "type": "array", "items": { "type": "string" } },
+        "categoryId": { "type": "string" },
+        "brandId": { "type": "string" },
+        "purchasePrice": { "type": "number" },
+        "salePrice": { "type": "number" },
+        "stock": { "type": "number" },
+        "unit": { "type": "string" },
+        "minStock": { "type": "number" },
+        "expiryDate": { "type": "string" },
+        "image": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "salePrice", "stock"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "A buyer.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "image": { "type": "string" },
+        "dueAmount": { "type": "number" },
+        "totalSpent": { "type": "number" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "phone"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "A transaction record.",
+      "type": "object",
+      "properties": {
+        "customerId": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "customerAddress": { "type": "string" },
+        "userId": { "type": "string" },
+        "invoiceNo": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "discount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "dueAmount": { "type": "number" },
+        "payableAmount": { "type": "number" },
+        "vat": { "type": "number" },
+        "paymentMethod": { "type": "string" },
+        "items": { 
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "productId": { "type": "string" },
+              "name": { "type": "string" },
+              "quantity": { "type": "number" },
+              "unitPrice": { "type": "number" },
+              "discount": { "type": "number" },
+              "discountPercent": { "type": "number" },
+              "scannedBarcodes": { "type": "array", "items": { "type": "string" } },
+              "warrantyType": { "type": "string" },
+              "warrantyDuration": { "type": "string" },
+              "subtotal": { "type": "number" }
+            }
+          }
+        },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["totalAmount", "paidAmount"]
+    },
+    "User": {
+      "title": "User",
+      "description": "System user.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "manager", "salesman", "accountant", "staff"] },
+        "businessId": { "type": "string" },
+        "image": { "type": "string" },
+        "permissions": { "type": "array", "items": { "type": "string" } },
+        "lastSeen": { "type": "string" },
+        "lastActive": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "email", "role", "businessId"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "A product provider.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "company": { "type": "string" },
+        "dueAmount": { "type": "number" }
+      },
+      "required": ["name"]
+    },
+    "SupplierTransaction": {
+      "title": "Supplier Transaction",
+      "description": "Payment or purchase record for a supplier.",
+      "type": "object",
+      "properties": {
+        "amount": { "type": "number" },
+        "type": { "type": "string", "enum": ["payment", "purchase"] },
+        "description": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Business expenditure.",
+      "type": "object",
+      "properties": {
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "description": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" }
+      }
+    },
+    "SMSLog": {
+      "title": "SMS Log",
+      "description": "History of sent SMS messages.",
+      "type": "object",
+      "properties": {
+        "recipient": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string" },
+        "error": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "SMSConfig": {
+      "title": "SMS Config",
+      "description": "Settings for SMS gateway.",
+      "type": "object",
+      "properties": {
+        "provider": { "type": "string" },
+        "apiKey": { "type": "string" },
+        "apiUser": { "type": "string" },
+        "senderId": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "businesses/{businessId}": {
+      "schema": "Business",
+      "description": "Business root document"
+    },
+    "businesses/{businessId}/products": {
+      "schema": "Product",
+      "description": "Products of a business"
+    },
+    "businesses/{businessId}/categories": {
+      "schema": "object",
+      "description": "Categories of a business"
+    },
+    "businesses/{businessId}/customers": {
+      "schema": "Customer",
+      "description": "Customers of a business"
+    },
+    "businesses/{businessId}/sales": {
+      "schema": "Sale",
+      "description": "Sales records"
+    },
+    "businesses/{businessId}/suppliers": {
+      "schema": "Supplier",
+      "description": "Suppliers tracking"
+    },
+    "businesses/{businessId}/suppliers/{supplierId}/transactions": {
+      "schema": "SupplierTransaction",
+      "description": "Supplier transaction history"
+    },
+    "businesses/{businessId}/expenses": {
+      "schema": "Expense",
+      "description": "Expenditure tracking"
+    },
+    "businesses/{businessId}/sms_logs": {
+      "schema": "SMSLog",
+      "description": "SMS history"
+    },
+    "businesses/{businessId}/config/sms": {
+      "schema": "SMSConfig",
+      "description": "SMS gateway config"
+    },
+    "users": {
+      "schema": "User",
+      "description": "System-wide users"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+name = "hishabpati-erp"
+compatibility_date = "2024-11-01"
+pages_build_output_dir = "dist"
+
+# Cloudflare D1 Serverless Database (Free Forever Tier)
+# 5 Million reads/day and 100,000 writes/day free
+[[d1_databases]]
+binding = "DB"
+database_name = "hishabpati_db"
+database_id = "hishabpati-d1-prod"
+
+[vars]
+ENVIRONMENT = "production"
+APP_NAME = "HishabPati ERP"

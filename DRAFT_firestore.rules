@@ -1,0 +1,283 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helper Primitives ---
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner() {
+      return isSignedIn() && 
+             request.auth.token != null && (
+               request.auth.token.email == 'nahid521610@gmail.com' ||
+               request.auth.token.email == 'mominkhan051220@gmail.com' ||
+               request.auth.uid == 'yHCNX6b117U0KIIoZomnJKza7qb2'
+             );
+    }
+
+    // Check if super admin (admins collection lookup or isOwner)
+    function isAdmin() {
+      return isSignedIn() && (
+        isOwner() || 
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Check if user belongs to the business
+    function isBusinessUser(businessId) {
+      return !isSignedIn() || 
+             (isSignedIn() && (
+               isAdmin() ||
+               !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.businessId == businessId
+             ));
+    }
+
+    // Check if user is business admin (owner or superadmin or has 'admin' role in businesses users lookup)
+    function isBusinessAdmin(businessId) {
+      return !isSignedIn() || 
+             (isSignedIn() && (
+               isAdmin() ||
+               !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+             ));
+    }
+
+    // --- Entity Validations ---
+
+    function isValidProduct(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
+             data.salePrice is number && data.salePrice >= 0 &&
+             data.stock is number &&
+             (!('bnName' in data) || data.bnName is string) &&
+             (!('sku' in data) || data.sku is string) &&
+             (!('barcode' in data) || data.barcode is string) &&
+             (!('barcodes' in data) || data.barcodes is list) &&
+             (!('categoryId' in data) || data.categoryId is string) &&
+             (!('brandId' in data) || data.brandId is string) &&
+             (!('unit' in data) || data.unit is string) &&
+             (!('purchasePrice' in data) || data.purchasePrice is number) &&
+             (!('minStock' in data) || data.minStock is number) &&
+             (!('expiryDate' in data) || data.expiryDate is string) &&
+             (!('image' in data) || data.image is string) &&
+             (!('createdAt' in data) || data.createdAt is string);
+    }
+
+    function isValidCustomer(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.phone is string && data.phone.size() <= 20 &&
+             (!('email' in data) || data.email is string) &&
+             (!('address' in data) || data.address is string) &&
+             (!('image' in data) || data.image is string) &&
+             (!('dueAmount' in data) || data.dueAmount is number) &&
+             (!('totalSpent' in data) || data.totalSpent is number) &&
+             (!('createdBy' in data) || data.createdBy is string) &&
+             (!('createdAt' in data) || data.createdAt is string);
+    }
+
+    function isValidSale(data) {
+      return data.totalAmount is number && data.totalAmount >= 0 &&
+             data.paidAmount is number && data.paidAmount >= 0 &&
+             (!('customerId' in data) || data.customerId is string) &&
+             (!('customerName' in data) || data.customerName is string) &&
+             (!('customerPhone' in data) || data.customerPhone is string) &&
+             (!('customerAddress' in data) || data.customerAddress is string) &&
+             (!('userId' in data) || data.userId is string) &&
+             (!('invoiceNo' in data) || data.invoiceNo is string) &&
+             (!('dueAmount' in data) || data.dueAmount is number) &&
+             (!('payableAmount' in data) || data.payableAmount is number) &&
+             (!('discount' in data) || data.discount is number) &&
+             (!('vat' in data) || data.vat is number) &&
+             (!('paymentMethod' in data) || data.paymentMethod is string) &&
+             (!('items' in data) || (data.items is list && (data.items.size() == 0 || data.items[0] is map))) &&
+             (!('createdBy' in data) || data.createdBy is string) &&
+             (!('createdAt' in data) || data.createdAt is string);
+    }
+
+    function isValidUser(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 100 &&
+             data.role in ['admin', 'manager', 'salesman', 'accountant', 'staff'] &&
+             data.businessId is string &&
+             (!('phone' in data) || data.phone is string) &&
+             (!('password' in data) || data.password is string) &&
+             (!('image' in data) || data.image is string) &&
+             (!('permissions' in data) || data.permissions is list) &&
+             (!('lastSeen' in data) || data.lastSeen is string) &&
+             (!('lastActive' in data) || data.lastActive is string) &&
+             (!('createdAt' in data) || data.createdAt is string);
+    }
+
+    // Expenses subcollection validation
+    function isValidExpense(data) {
+      return data.category is string && data.amount is number && data.amount >= 0 &&
+             (!('description' in data) || data.description is string) &&
+             (!('note' in data) || data.note is string) &&
+             (!('date' in data) || data.date is string) &&
+             (!('userId' in data) || data.userId is string);
+    }
+
+    function isValidSupplier(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             (!('phone' in data) || data.phone is string) &&
+             (!('address' in data) || data.address is string) &&
+             (!('company' in data) || data.company is string) &&
+             (!('dueAmount' in data) || data.dueAmount is number);
+    }
+
+    function isValidBusiness(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             (!('address' in data) || data.address is string) &&
+             (!('phone' in data) || data.phone is string) &&
+             (!('currency' in data) || data.currency is string) &&
+             (!('logo' in data) || data.logo is string) &&
+             (!('logoUrl' in data) || data.logoUrl is string) &&
+             (!('backupEmail' in data) || data.backupEmail is string) &&
+             (!('defaultPrinter' in data) || data.defaultPrinter is string) &&
+             (!('theme' in data) || data.theme is string) &&
+             (!('smtpConfig' in data) || data.smtpConfig is map);
+    }
+
+    // --- Match Rules ---
+
+    // 1. User Profiles - Publicly readable for unauthenticated login lookup, but restricted on writes
+    match /users/{userId} {
+      allow get: if true; // Required for login lookups by email
+      allow list: if true; // Required for unauthenticated email-based queries during login
+      
+      allow create: if isValidUser(incoming()) && (
+        !exists(/databases/$(database)/documents/users/$(userId)) || 
+        !isSignedIn() ||
+        isAdmin()
+      );
+      
+      allow update: if isValidUser(incoming()) && (
+        !isSignedIn() || (
+          isSignedIn() && (
+            isAdmin() || (
+              request.auth.uid == userId && 
+              incoming().role == existing().role && 
+              incoming().businessId == existing().businessId
+            )
+          )
+        )
+      );
+      
+      allow delete: if !isSignedIn() || isAdmin();
+    }
+
+    // 2. Business Data and Subcollections
+    match /businesses/{businessId} {
+      allow get, list: if true; // Allows loading of business details (name, currency, logo)
+      allow create: if isBusinessAdmin(businessId) && isValidBusiness(incoming());
+      allow update: if isBusinessAdmin(businessId) && isValidBusiness(incoming());
+      allow delete: if isSignedIn() && isAdmin();
+
+      // Products subcollection
+      match /products/{productId} {
+        allow read: if isBusinessUser(businessId);
+        allow create: if isBusinessUser(businessId) && isValidProduct(incoming()) && isValidId(productId);
+        allow update: if isBusinessUser(businessId) && isValidProduct(incoming()) && (
+          isBusinessAdmin(businessId) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'barcodes'])
+        );
+        allow delete: if isBusinessAdmin(businessId);
+      }
+
+      // Categories subcollection
+      match /categories/{catId} {
+        allow read, write: if isBusinessUser(businessId);
+      }
+
+      // Customers subcollection and sub-payments
+      match /customers/{customerId} {
+        allow read: if isBusinessUser(businessId);
+        allow create: if isBusinessUser(businessId) && isValidCustomer(incoming()) && isValidId(customerId);
+        allow update: if isBusinessUser(businessId) && isValidCustomer(incoming()) && (
+          isBusinessAdmin(businessId) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['dueAmount', 'totalSpent'])
+        );
+        allow delete: if isBusinessAdmin(businessId);
+        
+        match /payments/{paymentId} {
+          allow read, write: if isBusinessUser(businessId);
+        }
+      }
+
+      // Sales subcollection
+      match /sales/{saleId} {
+        allow read: if isBusinessUser(businessId);
+        allow create: if isBusinessUser(businessId) && isValidSale(incoming()) && isValidId(saleId);
+        allow update: if isBusinessUser(businessId) && isValidSale(incoming()) && (
+          isBusinessAdmin(businessId) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['paidAmount', 'dueAmount'])
+        );
+        allow delete: if isBusinessAdmin(businessId);
+      }
+
+      // Expenses subcollection
+      match /expenses/{expenseId} {
+        allow read: if isBusinessUser(businessId);
+        allow create: if isBusinessUser(businessId) && isValidExpense(incoming()) && isValidId(expenseId);
+        allow update: if isBusinessUser(businessId) && isValidExpense(incoming()) && isBusinessAdmin(businessId);
+        allow delete: if isBusinessAdmin(businessId);
+      }
+
+      // Suppliers subcollection and sub-transactions
+      match /suppliers/{supplierId} {
+        allow read: if isBusinessUser(businessId);
+        allow create: if isBusinessUser(businessId) && isValidSupplier(incoming()) && isValidId(supplierId);
+        allow update: if isBusinessUser(businessId) && isValidSupplier(incoming()) && (
+          isBusinessAdmin(businessId) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['dueAmount'])
+        );
+        allow delete: if isBusinessAdmin(businessId);
+
+        match /transactions/{tId} {
+          allow read, write: if isBusinessUser(businessId);
+        }
+      }
+
+      // SMS logs subcollection
+      match /sms_logs/{logId} {
+        allow read: if isBusinessUser(businessId);
+        allow create: if isBusinessUser(businessId) && isValidId(logId);
+      }
+
+      // Configuration subcollection
+      match /config/{configId} {
+        allow read, write: if isBusinessUser(businessId);
+      }
+    }
+
+    // 3. Super Admins
+    match /admins/{uid} {
+      allow read: if isSignedIn();
+      allow write: if false; // Only manageable through GCP console
+    }
+    
+    // 4. Fallback/aggregate errors tracking path if any
+    match /dashboard_aggregate/{docId} {
+      allow read: if true;
+      allow write: if isBusinessUser('main-business');
+    }
+  }
+}

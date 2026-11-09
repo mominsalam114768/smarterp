@@ -1,0 +1,63 @@
+@import url('https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@300;400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", "Hind Siliguri", ui-sans-serif, system-ui, sans-serif;
+  --font-bengali: "Hind Siliguri", sans-serif;
+
+  --color-primary: #2563eb; /* Blue-600 for Sleek Interface */
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f8fafc; /* Slate-50 */
+  --color-accent: #3b82f6; /* Blue-500 */
+  
+  --radius-xl: 1rem;
+  --radius-2xl: 1.5rem;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased transition-colors duration-300;
+  }
+  
+  *, ::before, ::after {
+    @apply transition-colors duration-300 ease-in-out;
+  }
+}
+
+.font-bengali {
+  font-family: var(--font-bengali);
+}
+
+@layer utilities {
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-slate-200 dark:bg-slate-800 rounded-full;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Scale down print preview on small screens */
+  @media (max-width: 640px) {
+    .preview-content-container .print-content-wrapper {
+      transform: scale(0.6);
+      transform-origin: top center;
+      width: 166.66% !important; /* compensate for 0.6 scale */
+    }
+    .preview-content-container {
+      padding: 0 !important;
+    }
+  }
+}
