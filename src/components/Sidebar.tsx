@@ -65,7 +65,7 @@ export function Sidebar({ activeTab, setActiveTab, user, business }: SidebarProp
   const filteredMenuItems = menuItems.filter(item => {
     if (!user) return false;
     if (user.role === 'admin') return true;
-    if (item.id === 'approvals') return false; // Strictly admin only
+    if (item.id === 'approvals' || item.id === 'settings') return false; // Strictly admin only
     return user.permissions?.includes(item.id);
   });
 

@@ -39,8 +39,24 @@ export const getSavedDriveAccount = (): SavedDriveAccount | null => {
   return null;
 };
 
+const getActiveDriveBusinessId = (): string => {
+  if (typeof window !== "undefined") {
+    try {
+      const savedUser = sessionStorage.getItem("smart_business_user") || localStorage.getItem("smart_business_user");
+      if (savedUser) {
+        const parsed = JSON.parse(savedUser);
+        if (parsed?.businessId) return parsed.businessId;
+      }
+      const savedShop = localStorage.getItem("smart_active_shop_id");
+      if (savedShop) return savedShop;
+    } catch {}
+  }
+  return "main-business";
+};
+
 // Save drive account locally and in Firestore
-export const saveDriveAccount = async (account: SavedDriveAccount) => {
+export const saveDriveAccount = async (account: SavedDriveAccount, businessId?: string) => {
+  const targetBizId = businessId || getActiveDriveBusinessId();
   if (typeof window !== "undefined") {
     localStorage.setItem(DRIVE_ACCOUNT_STORAGE_KEY, JSON.stringify(account));
   }
@@ -55,7 +71,7 @@ export const saveDriveAccount = async (account: SavedDriveAccount) => {
 
   // Sync to Firestore cloud config so all admin sessions know Drive is connected
   try {
-    const configRef = doc(db, "businesses", "main-business", "config", "drive_backup");
+    const configRef = doc(db, "businesses", targetBizId, "config", "drive_backup");
     await setDoc(configRef, {
       email: account.email,
       displayName: account.displayName || "",
@@ -71,9 +87,10 @@ export const saveDriveAccount = async (account: SavedDriveAccount) => {
 };
 
 // Load saved drive account from Firestore cloud config
-export const fetchCloudDriveAccount = async (): Promise<SavedDriveAccount | null> => {
+export const fetchCloudDriveAccount = async (businessId?: string): Promise<SavedDriveAccount | null> => {
+  const targetBizId = businessId || getActiveDriveBusinessId();
   try {
-    const configRef = doc(db, "businesses", "main-business", "config", "drive_backup");
+    const configRef = doc(db, "businesses", targetBizId, "config", "drive_backup");
     const snap = await getDoc(configRef);
     if (snap.exists()) {
       const data = snap.data();
@@ -106,14 +123,15 @@ export const fetchCloudDriveAccount = async (): Promise<SavedDriveAccount | null
   return getSavedDriveAccount();
 };
 
-export const disconnectDriveAccount = async () => {
+export const disconnectDriveAccount = async (businessId?: string) => {
+  const targetBizId = businessId || getActiveDriveBusinessId();
   cachedAccessToken = null;
   currentGoogleUser = null;
   if (typeof window !== "undefined") {
     localStorage.removeItem(DRIVE_ACCOUNT_STORAGE_KEY);
   }
   try {
-    const configRef = doc(db, "businesses", "main-business", "config", "drive_backup");
+    const configRef = doc(db, "businesses", targetBizId, "config", "drive_backup");
     await setDoc(configRef, {
       email: null,
       disconnectedAt: new Date().toISOString(),

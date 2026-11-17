@@ -67,6 +67,7 @@ export function Dashboard({ user }: { user: User | null }) {
       { label: "আজকের মোট বিক্রি", value: `৳ ${stats.todaySales}` },
       { label: "চলতি মাসের বিক্রি", value: `৳ ${stats.monthlySales}` },
       { label: "মোট বকেয়া", value: `৳ ${stats.totalDue}` },
+      ...(stats.totalCustomerAdvance ? [{ label: "মোট ক্রেতা পাবে (অ্যাডভান্স)", value: `৳ ${stats.totalCustomerAdvance}` }] : []),
       { label: "স্টক অ্যালার্ট", value: `${stats.lowStockCount} টি পণ্য` },
       { label: "মোট পণ্যের সংখ্যা", value: `${stats.totalProducts} টি` },
       { label: "মোট খরচ", value: `৳ ${stats.totalExpense}` },
@@ -134,8 +135,16 @@ export function Dashboard({ user }: { user: User | null }) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <StatCard title="আজকের বিক্রি" value={stats.todaySales} trend="+১২%" icon={TrendingUp} color="bg-blue-500" currency="৳" />
         <StatCard title="চলতি মাসের বিক্রি" value={stats.monthlySales} trend="+৮%" icon={CreditCard} color="bg-emerald-500" currency="৳" />
-        <StatCard title="মোট বকেয়া" value={stats.totalDue} trend="-৫%" icon={Users} color="bg-amber-500" currency="৳" negativeTrend />
-        <StatCard title="স্টক অ্যালার্ট" value={stats.lowStockCount} trend="৩টি পণ্য" icon={AlertCircle} color="bg-rose-500" isCount />
+        <StatCard
+          title="মোট বকেয়া"
+          value={stats.totalDue}
+          trend={stats.totalCustomerAdvance ? `ক্রেতা পাবে: ৳${stats.totalCustomerAdvance.toLocaleString()}` : "বকেয়া হিসাব"}
+          icon={Users}
+          color="bg-amber-500"
+          currency="৳"
+          negativeTrend={!stats.totalCustomerAdvance}
+        />
+        <StatCard title="স্টক অ্যালার্ট" value={stats.lowStockCount} trend={`${stats.lowStockCount}টি পণ্য`} icon={AlertCircle} color="bg-rose-500" isCount />
       </div>
 
       {(stats.expiredProductCount > 0 || stats.aboutToExpireCount > 0) && (
@@ -257,7 +266,19 @@ export function Dashboard({ user }: { user: User | null }) {
                   <td className="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm font-sans">{formatDhakaDate(sale.createdAt, { day: 'numeric', month: 'short', year: 'numeric' })}</td>
                   <td className="px-6 py-4 font-bold text-slate-900 dark:text-slate-100">৳ {sale.totalAmount}</td>
                   <td className="px-6 py-4">
-                    <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-500 uppercase">পেইড</span>
+                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold font-bengali uppercase ${
+                      (Number(sale.dueAmount) || 0) < 0
+                        ? 'bg-emerald-100 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                        : (Number(sale.dueAmount) || 0) > 0
+                          ? 'bg-rose-100 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400'
+                          : 'bg-blue-100 dark:bg-blue-500/10 text-blue-700 dark:text-blue-400'
+                    }`}>
+                      {(Number(sale.dueAmount) || 0) < 0
+                        ? `ক্রেতা পাবে (৳${Math.abs(Number(sale.dueAmount))})`
+                        : (Number(sale.dueAmount) || 0) > 0
+                          ? `বকেয়া (৳${sale.dueAmount})`
+                          : 'পেইড'}
+                    </span>
                   </td>
                   <td className="px-6 py-4">
                     <button 

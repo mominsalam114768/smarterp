@@ -372,11 +372,25 @@ export function CustomerList({ user }: CustomerListProps) {
 
               <div className="grid grid-cols-2 gap-4 py-4 border-y border-slate-50 dark:border-slate-800">
                 <div>
-                    <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider mb-1">বকেয়া</p>
-                    <p className={`font-bold ${customer.dueAmount > 0 ? 'text-rose-500' : 'text-emerald-500 dark:text-emerald-400'}`}>৳ {customer.dueAmount}</p>
+                    <p className={`text-[10px] font-bold uppercase tracking-wider mb-1 font-bengali ${
+                      (Number(customer.dueAmount) || 0) < 0
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-slate-400 dark:text-slate-500'
+                    }`}>
+                      {(Number(customer.dueAmount) || 0) < 0 ? 'ক্রেতা পাবে (অ্যাডভান্স)' : 'বকেয়া'}
+                    </p>
+                    <p className={`font-bold ${
+                      (Number(customer.dueAmount) || 0) > 0
+                        ? 'text-rose-500'
+                        : (Number(customer.dueAmount) || 0) < 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-slate-600 dark:text-slate-300'
+                    }`}>
+                      ৳ {Math.abs(Number(customer.dueAmount) || 0).toLocaleString()}
+                    </p>
                 </div>
                 <div>
-                    <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider mb-1">মোট কেনাকাটা</p>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider mb-1 font-bengali">মোট কেনাকাটা</p>
                     <p className="font-bold text-slate-900 dark:text-slate-100 transition-colors">৳ {customer.totalSpent}</p>
                 </div>
               </div>
@@ -480,11 +494,19 @@ export function CustomerList({ user }: CustomerListProps) {
                           </div>
                         </div>
                         <div className="text-right">
-                          <p className="font-bold text-slate-900 dark:text-slate-100">৳ {sale.totalAmount}</p>
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            sale.paymentStatus === 'PAID' ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400' : 'bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400'
+                          <p className="font-bold text-slate-900 dark:text-slate-100">৳ {sale.payableAmount || sale.totalAmount}</p>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full font-bengali ${
+                            (Number(sale.dueAmount) || 0) < 0
+                              ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400'
+                              : (Number(sale.dueAmount) || 0) === 0
+                                ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                                : 'bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400'
                           }`}>
-                            {sale.paymentStatus === 'PAID' ? 'পেইড' : 'বকেয়া'}
+                            {(Number(sale.dueAmount) || 0) < 0
+                              ? `ক্রেতা পাবে: ৳${Math.abs(Number(sale.dueAmount))}`
+                              : (Number(sale.dueAmount) || 0) === 0
+                                ? 'পেইড'
+                                : `বকেয়া: ৳${sale.dueAmount}`}
                           </span>
                         </div>
                       </div>
@@ -494,12 +516,24 @@ export function CustomerList({ user }: CustomerListProps) {
               )}
             </div>
 
-            <div className="p-6 bg-slate-50 dark:bg-slate-800 border-t border-slate-100 dark:border-slate-700 flex items-center justify-between font-bengali">
+            <div className="p-6 bg-slate-50 dark:bg-slate-800 border-t border-slate-100 dark:border-slate-700 flex flex-wrap items-center justify-between gap-4 font-bengali">
               <div className="text-sm text-slate-500 dark:text-slate-400">
                 মোট লেনদেন: <span className="font-bold text-slate-900 dark:text-slate-100 font-sans">{customerSales.length}</span> টি
               </div>
               <div className="text-sm text-slate-500 dark:text-slate-400">
-                মোট ব্যয়: <span className="font-bold text-primary dark:text-blue-400 font-sans">৳ {customerSales.reduce((acc, s) => acc + s.totalAmount, 0)}</span>
+                {(Number(viewingHistory.dueAmount) || 0) < 0 ? 'বর্তমান ক্রেতা পাবে:' : 'বর্তমান বকেয়া:'}{' '}
+                <span className={`font-bold font-sans ${
+                  (Number(viewingHistory.dueAmount) || 0) < 0
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : (Number(viewingHistory.dueAmount) || 0) > 0
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : 'text-slate-700 dark:text-slate-200'
+                }`}>
+                  ৳ {Math.abs(Number(viewingHistory.dueAmount) || 0).toLocaleString()}
+                </span>
+              </div>
+              <div className="text-sm text-slate-500 dark:text-slate-400">
+                মোট কেনাকাটা: <span className="font-bold text-primary dark:text-blue-400 font-sans">৳ {customerSales.reduce((acc, s) => acc + (Number(s.payableAmount) || Number(s.totalAmount) || 0), 0)}</span>
               </div>
             </div>
           </div>

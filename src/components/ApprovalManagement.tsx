@@ -25,7 +25,7 @@ import {
   BadgeAlert
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { api } from "../services/api";
+import { api, isOtherProduct } from "../services/api";
 import { ApprovalRequest, User, Product } from "../types";
 import { formatDhakaDateTime } from "../lib/utils";
 import { printInvoice, printPaymentReceipt } from "../lib/printUtils";
@@ -122,12 +122,14 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
     return true;
   });
 
-  // Stock check helper for a sale request
+  // Stock check helper for a sale request (skips 'অন্যান্য' / custom products)
   const checkStockAvailability = (req: ApprovalRequest) => {
     if (req.type !== 'sale' || !req.saleData?.items) return { ok: true, shortages: [] };
     const shortages: string[] = [];
     for (const item of req.saleData.items) {
+      if (isOtherProduct(item)) continue;
       const prod = products.find(p => p.id === item.productId || p.id === (item as any).id);
+      if (prod && isOtherProduct(prod)) continue;
       const currentStock = prod ? Number(prod.stock) || 0 : 0;
       if (currentStock < Number(item.quantity)) {
         shortages.push(`${item.name} (প্রয়োজন: ${item.quantity}, স্টক: ${currentStock})`);
@@ -167,7 +169,7 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
           phone: req.paymentData?.customerPhone || "",
           amount: req.paymentData?.amount || 0,
           type: 'customer',
-          dueRemaining: Math.max(0, (req.paymentData?.currentDueBefore || 0) - (req.paymentData?.amount || 0)),
+          dueRemaining: (req.paymentData?.currentDueBefore || 0) - (req.paymentData?.amount || 0),
           isTemporary: false,
           description: `অনুমোদিত বকেয়া আদায় (#${req.temporaryInvoiceNo})`
         });
@@ -216,7 +218,9 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
         phone: req.paymentData.customerPhone || "",
         amount: req.paymentData.amount,
         type: 'customer',
-        dueRemaining: req.paymentData.currentDueBefore,
+        dueRemaining: req.status === 'approved'
+          ? (req.paymentData.currentDueBefore - req.paymentData.amount)
+          : req.paymentData.currentDueBefore,
         isTemporary: req.status === 'pending',
         description: `বকেয়া আদায় রিকুয়েস্ট (#${req.temporaryInvoiceNo})`
       });
@@ -559,6 +563,16 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
                           বাকি: ৳{req.saleData?.dueAmount}
                         </p>
                       )}
+                      {isSale && Number(req.saleData?.dueAmount) < 0 && (
+                        <p className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 font-bengali mt-0.5">
+                          ক্রেতা পাবে: ৳{Math.abs(Number(req.saleData?.dueAmount))}
+                        </p>
+                      )}
+                      {!isSale && req.paymentData && (req.paymentData.currentDueBefore - req.paymentData.amount) < 0 && (
+                        <p className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 font-bengali mt-0.5">
+                          ক্রেতা পাবে: ৳{Math.abs(req.paymentData.currentDueBefore - req.paymentData.amount)}
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-1.5">
@@ -704,10 +718,17 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
                         <span>পেইড অ্যামাউন্ট:</span>
                         <span>৳{selectedRequest.saleData.paidAmount}</span>
                       </div>
-                      <div className="flex justify-between text-rose-600 font-bold">
-                        <span>বকেয়া:</span>
-                        <span>৳{selectedRequest.saleData.dueAmount}</span>
-                      </div>
+                      {Number(selectedRequest.saleData.dueAmount) < 0 ? (
+                        <div className="flex justify-between text-emerald-600 font-bold">
+                          <span>ক্রেতা পাবে (অতিরিক্ত জমা):</span>
+                          <span>৳{Math.abs(Number(selectedRequest.saleData.dueAmount))}</span>
+                        </div>
+                      ) : (
+                        <div className="flex justify-between text-rose-600 font-bold">
+                          <span>বকেয়া:</span>
+                          <span>৳{selectedRequest.saleData.dueAmount}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -724,13 +745,30 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
                       <span className="font-bold">{selectedRequest.paymentData.customerPhone || 'N/A'}</span>
                     </div>
                     <div className="flex justify-between items-center text-sm">
-                      <span className="text-slate-500">পূর্বে মোট বকেয়া:</span>
-                      <span className="font-bold text-rose-600">৳{selectedRequest.paymentData.currentDueBefore}</span>
+                      <span className="text-slate-500">
+                        {(selectedRequest.paymentData.currentDueBefore || 0) < 0 ? 'পূর্বে ক্রেতা পাবে:' : 'পূর্বে মোট বকেয়া:'}
+                      </span>
+                      <span className={`font-bold ${(selectedRequest.paymentData.currentDueBefore || 0) < 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        ৳{Math.abs(selectedRequest.paymentData.currentDueBefore || 0)}
+                      </span>
                     </div>
                     <div className="flex justify-between items-center text-base font-black pt-3 border-t border-slate-200 dark:border-slate-700">
                       <span className="text-emerald-600">গৃহীত পেমেন্ট পরিমাণ:</span>
                       <span className="text-emerald-600 text-xl">৳{selectedRequest.paymentData.amount}</span>
                     </div>
+                    {(() => {
+                      const afterBal = (selectedRequest.paymentData.currentDueBefore || 0) - (selectedRequest.paymentData.amount || 0);
+                      return (
+                        <div className="flex justify-between items-center text-sm font-bold pt-2 border-t border-slate-200 dark:border-slate-700">
+                          <span className={afterBal < 0 ? 'text-emerald-600' : afterBal > 0 ? 'text-rose-600' : 'text-slate-600'}>
+                            {afterBal < 0 ? 'পেমেন্ট পর ক্রেতা পাবে (অ্যাডভান্স):' : afterBal > 0 ? 'পেমেন্ট পর অবশিষ্ট বকেয়া:' : 'পেমেন্ট পর অবশিষ্ট বকেয়া:'}
+                          </span>
+                          <span className={afterBal < 0 ? 'text-emerald-600' : afterBal > 0 ? 'text-rose-600' : 'text-slate-600'}>
+                            ৳{Math.abs(afterBal)}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>

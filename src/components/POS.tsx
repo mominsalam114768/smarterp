@@ -6,7 +6,7 @@
 import { ShoppingCart, Search, UserPlus, Trash2, Minus, Plus, CreditCard, Banknote, Smartphone, Scan, Package, X } from "lucide-react";
 import { useEffect, useState, FormEvent, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { api } from "../services/api";
+import { api, isOtherProduct } from "../services/api";
 import { Product, Customer, Sale, User } from "../types";
 import { cn } from "../lib/utils";
 import { printInvoice } from "../lib/printUtils";
@@ -34,6 +34,8 @@ export function POS({ user }: POSProps) {
   
   const [showAddCustomerModal, setShowAddCustomerModal] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [customPriceModalProduct, setCustomPriceModalProduct] = useState<Product | null>(null);
+  const [customPriceInput, setCustomPriceInput] = useState("");
   const [newCustomerFormData, setNewCustomerFormData] = useState({
     name: "",
     phone: "",
@@ -141,20 +143,34 @@ export function POS({ user }: POSProps) {
     };
   }, [products, cart]);
 
-  const addToCart = (product: Product, scannedBarcode?: string) => {
-    if (product.stock <= 0) {
+  const addToCart = (product: Product, scannedBarcode?: string, forcedCustomPrice?: number) => {
+    const isOther = isOtherProduct(product);
+
+    if (!isOther && product.stock <= 0) {
       showNotify("এই পণ্যটি স্টকে নেই!", "error");
       return;
     }
 
-    if (product.expiryDate && new Date(product.expiryDate) < new Date()) {
+    if (!isOther && product.expiryDate && new Date(product.expiryDate) < new Date()) {
       showNotify("এই পণ্যটির মেয়াদ শেষ হয়ে গেছে!", "error");
       return;
     }
 
+    // If 'অন্যান্য' product is clicked from the grid without a forced price yet, open quick price prompt modal
+    if (isOther && forcedCustomPrice === undefined) {
+      const existing = cart.find(item => item.product.id === product.id);
+      setCustomPriceInput(existing && existing.product.salePrice > 0 ? String(existing.product.salePrice) : "");
+      setCustomPriceModalProduct(product);
+      return;
+    }
+
+    const effectiveProduct = isOther && forcedCustomPrice !== undefined
+      ? { ...product, salePrice: forcedCustomPrice, isCustomProduct: true }
+      : product;
+
     const existing = cart.find(item => item.product.id === product.id);
     if (existing) {
-      if (existing.quantity + 1 > product.stock) {
+      if (!isOther && existing.quantity + 1 > product.stock) {
         showNotify("স্টকের অতিরিক্ত পণ্য যুক্ত করা সম্ভব নয়!", "error");
         return;
       }
@@ -164,10 +180,15 @@ export function POS({ user }: POSProps) {
         newBarcodes.push(scannedBarcode);
       }
       
-      setCart(cart.map(item => item.product.id === product.id ? {...item, quantity: item.quantity + 1, scannedBarcodes: newBarcodes} : item));
+      setCart(cart.map(item => item.product.id === product.id ? {
+        ...item,
+        product: isOther && forcedCustomPrice !== undefined ? effectiveProduct : item.product,
+        quantity: isOther && forcedCustomPrice !== undefined ? item.quantity : item.quantity + 1,
+        scannedBarcodes: newBarcodes
+      } : item));
     } else {
       setCart([...cart, { 
-        product, 
+        product: effectiveProduct, 
         quantity: 1, 
         discount: 0, 
         discountPercent: 0,
@@ -177,13 +198,21 @@ export function POS({ user }: POSProps) {
     }
   };
 
+  const updateItemCustomPrice = (id: string, newPrice: number) => {
+    setCart(cart.map(item => item.product.id === id ? {
+      ...item,
+      product: { ...item.product, salePrice: Math.max(0, newPrice) }
+    } : item));
+  };
+
   const removeFromCart = (id: string) => setCart(cart.filter(item => item.product.id !== id));
   
   const updateQuantity = (id: string, delta: number) => {
     setCart(cart.map(item => {
       if (item.product.id === id) {
+        const isOther = isOtherProduct(item.product);
         const newQty = item.quantity + delta;
-        if (newQty > item.product.stock) {
+        if (!isOther && newQty > item.product.stock) {
           showNotify("স্টকের অতিরিক্ত পণ্য যুক্ত করা সম্ভব নয়!", "error");
           return item;
         }
@@ -196,7 +225,8 @@ export function POS({ user }: POSProps) {
   const setQuantity = (id: string, qty: number) => {
     setCart(cart.map(item => {
       if (item.product.id === id) {
-        if (qty > item.product.stock) {
+        const isOther = isOtherProduct(item.product);
+        if (!isOther && qty > item.product.stock) {
           showNotify(`সর্বোচ্চ ${item.product.stock} টি পণ্য স্টকে আছে!`, "error");
           return {...item, quantity: item.product.stock};
         }
@@ -234,7 +264,12 @@ export function POS({ user }: POSProps) {
   const payableBeforeVat = Math.max(0, cartSubtotal - totalDiscount);
   const vat = (payableBeforeVat * vatPercent) / 100;
   const totalPayable = payableBeforeVat + vat;
-  const due = Math.max(0, totalPayable - paidAmount);
+  const invoiceBalance = totalPayable - paidAmount; // > 0 means due on this invoice, < 0 means extra advance paid
+  const due = Math.max(0, invoiceBalance);
+  const extraPaidOnInvoice = Math.max(0, paidAmount - totalPayable);
+  const activeCustomer = customers.find(c => c.id === selectedCustomerId);
+  const activeCustomerPrevBalance = Number(activeCustomer?.dueAmount) || 0;
+  const projectedCustomerBalance = activeCustomerPrevBalance + invoiceBalance;
 
   const handleCheckout = async (forceCustomer?: Customer) => {
     if (cart.length === 0) return alert("কার্ট খালি!");
@@ -245,6 +280,13 @@ export function POS({ user }: POSProps) {
     // Rule: Must select an enrolled customer (Cash / Walk-in without customer is prohibited)
     if (!customerId || !selectedCustomer) {
       showNotify("ক্যাশ ক্রেতা প্রযোজ্য নয়! বিক্রয় করতে অবশ্যই তালিকা থেকে ক্রেতা নির্বাচন করুন অথবা '+' দিয়ে নতুন ক্রেতা যোগ করুন।", "error");
+      return;
+    }
+
+    // Validate that any custom ('অন্যান্য') product in cart has a price > 0
+    const invalidCustomItem = cart.find(item => isOtherProduct(item.product) && (Number(item.product.salePrice) || 0) <= 0);
+    if (invalidCustomItem) {
+      showNotify(`"${invalidCustomItem.product.bnName || invalidCustomItem.product.name}" পণ্যের দাম বসান!`, "error");
       return;
     }
 
@@ -262,7 +304,7 @@ export function POS({ user }: POSProps) {
       vat,
       payableAmount: totalPayable,
       paidAmount,
-      dueAmount: due,
+      dueAmount: invoiceBalance,
       paymentMethod,
         items: cart.map(item => {
           const itemSubtotal = item.product.salePrice * item.quantity;
@@ -277,6 +319,7 @@ export function POS({ user }: POSProps) {
             scannedBarcodes: item.scannedBarcodes,
             warrantyType: item.warrantyType,
             warrantyDuration: item.warrantyDuration,
+            isCustomProduct: isOtherProduct(item.product),
             subtotal: itemSubtotal - individualDiscount
           };
         })
@@ -304,7 +347,9 @@ export function POS({ user }: POSProps) {
         try {
           const smsConfig = await api.getSMSConfig();
           if (smsConfig.autoSMS && selectedCustomer && selectedCustomer.phone) {
-            const message = `প্রিয় ${selectedCustomer.name}, আপনার শপিং এর জন্য ধন্যবাদ। ইনভয়েস: ${createdSale.invoiceNo}, মোট: ৳${Math.round(createdSale.payableAmount)}, পেইড: ৳${createdSale.paidAmount}, বকেয়া: ৳${Math.round(createdSale.dueAmount)}।`;
+            const finalBal = (Number(selectedCustomer.dueAmount) || 0) + createdSale.dueAmount;
+            const balText = finalBal < 0 ? `ক্রেতা পাবে: ৳${Math.round(Math.abs(finalBal))}` : `বকেয়া: ৳${Math.round(finalBal)}`;
+            const message = `প্রিয় ${selectedCustomer.name}, আপনার শপিং এর জন্য ধন্যবাদ। ইনভয়েস: ${createdSale.invoiceNo}, মোট: ৳${Math.round(createdSale.payableAmount)}, পেইড: ৳${createdSale.paidAmount}, ${balText}।`;
             await api.sendSMS(selectedCustomer.phone, message);
             console.log("[Auto SMS] Sent to:", selectedCustomer.phone);
           }
@@ -424,24 +469,32 @@ export function POS({ user }: POSProps) {
 
         <div className="flex-1 overflow-y-auto p-4 transition-colors">
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
-            {filteredProducts.map(product => (
+            {filteredProducts.map(product => {
+              const isOther = isOtherProduct(product);
+              const isOutOfStock = !isOther && product.stock <= 0;
+              const isExpired = !isOther && (product.expiryDate ? new Date(product.expiryDate) < new Date() : false);
+              return (
               <button 
                 key={product.id}
                 onClick={() => addToCart(product)}
-                disabled={product.stock <= 0 || (product.expiryDate ? new Date(product.expiryDate) < new Date() : false)}
+                disabled={isOutOfStock || isExpired}
                 className={cn(
-                  "bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm hover:border-primary dark:hover:border-blue-500 hover:shadow-md transition-all text-left flex flex-col h-full group",
-                  (product.stock <= 0 || (product.expiryDate ? new Date(product.expiryDate) < new Date() : false)) && "opacity-60 grayscale cursor-not-allowed"
+                  "bg-white dark:bg-slate-900 p-3 rounded-2xl border shadow-sm hover:border-primary dark:hover:border-blue-500 hover:shadow-md transition-all text-left flex flex-col h-full group",
+                  isOther ? "border-indigo-200 dark:border-indigo-800/70 bg-indigo-50/20 dark:bg-indigo-950/20" : "border-slate-100 dark:border-slate-800",
+                  (isOutOfStock || isExpired) && "opacity-60 grayscale cursor-not-allowed"
                 )}
               >
-                <div className="w-full aspect-square bg-slate-100 dark:bg-slate-800 rounded-xl mb-3 flex items-center justify-center overflow-hidden relative">
-                  {product.image ? <img src={product.image} className="w-full h-full object-cover" /> : <Package size={40} className="text-slate-300 dark:text-slate-700" />}
-                  {product.stock <= 0 && (
+                <div className={cn(
+                  "w-full aspect-square rounded-xl mb-3 flex items-center justify-center overflow-hidden relative",
+                  isOther ? "bg-indigo-100/60 dark:bg-indigo-900/30" : "bg-slate-100 dark:bg-slate-800"
+                )}>
+                  {product.image ? <img src={product.image} className="w-full h-full object-cover" /> : <Package size={40} className={isOther ? "text-indigo-500 dark:text-indigo-400" : "text-slate-300 dark:text-slate-700"} />}
+                  {isOutOfStock && (
                     <div className="absolute inset-0 bg-rose-500/10 backdrop-blur-[2px] flex items-center justify-center">
                       <span className="bg-rose-600 text-white text-[10px] font-black px-2 py-1 rounded-lg font-bengali">স্টক শেষ</span>
                     </div>
                   )}
-                  {product.expiryDate && new Date(product.expiryDate) < new Date() && (
+                  {isExpired && (
                     <div className="absolute inset-0 bg-rose-600/20 backdrop-blur-[2px] flex items-center justify-center">
                       <span className="bg-rose-700 text-white text-[10px] font-black px-2 py-1 rounded-lg font-bengali">মেয়াদ শেষ</span>
                     </div>
@@ -449,19 +502,25 @@ export function POS({ user }: POSProps) {
                 </div>
                 <div className="flex-1">
                   <h4 className="font-bold text-slate-900 dark:text-slate-100 text-sm mb-1 font-bengali line-clamp-1">{product.bnName || product.name}</h4>
-                  <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium mb-2">{product.sku}</p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium mb-2">{isOther ? "কাস্টম মূল্য" : product.sku}</p>
                 </div>
                 <div className="flex items-center justify-between mt-auto pt-2 border-t border-slate-50 dark:border-slate-800">
-                  <span className="font-bold text-primary dark:text-blue-400">৳{product.salePrice}</span>
+                  {isOther ? (
+                    <span className="font-bold text-xs text-indigo-600 dark:text-indigo-400 font-bengali">ইচ্ছেমতো দাম</span>
+                  ) : (
+                    <span className="font-bold text-primary dark:text-blue-400">৳{product.salePrice}</span>
+                  )}
                   <span className={cn(
-                    "text-[10px] font-bold px-1.5 py-0.5 rounded",
+                    "text-[10px] font-bold px-1.5 py-0.5 rounded font-bengali",
+                    isOther ? "bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400" :
                     product.stock > 10 ? "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-500" : 
                     product.stock > 0 ? "bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-500" :
                     "bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-500"
-                  )}>{product.stock} টি</span>
+                  )}>{isOther ? "স্টক বিহীন" : `${product.stock} টি`}</span>
                 </div>
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
@@ -506,10 +565,22 @@ export function POS({ user }: POSProps) {
                 <UserPlus size={18} />
               </button>
             </div>
-            {!selectedCustomerId && (
+            {!selectedCustomerId ? (
               <p className="text-[11px] text-rose-500 font-semibold font-bengali mt-0.5">
                 ⚠️ ক্যাশ ক্রেতা গ্রহণযোগ্য নয়। শুধুমাত্র যোগ করা ক্রেতার কাছেই বিক্রি করা যাবে।
               </p>
+            ) : activeCustomer && (
+              <div className={cn(
+                "mt-2 px-3 py-1.5 rounded-lg text-xs font-bold font-bengali flex items-center justify-between",
+                activeCustomerPrevBalance > 0
+                  ? "bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800/50"
+                  : activeCustomerPrevBalance < 0
+                    ? "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/50"
+                    : "bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+              )}>
+                <span>{activeCustomerPrevBalance < 0 ? "ক্রেতা পাবে (অ্যাডভান্স জমা):" : "পূর্বের বকেয়া:"}</span>
+                <span>৳ {Math.abs(activeCustomerPrevBalance).toLocaleString()}</span>
+              </div>
             )}
           </div>
         </div>
@@ -545,7 +616,22 @@ export function POS({ user }: POSProps) {
                         </button>
                       </div>
                       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                         <p className="text-xs text-slate-400 dark:text-slate-500 font-bold">৳{item.product.salePrice} x {item.quantity}</p>
+                         {isOtherProduct(item.product) ? (
+                           <div className="flex items-center gap-1.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 rounded-lg px-2 py-1">
+                             <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 font-bengali">দাম: ৳</span>
+                             <input
+                               type="number"
+                               min="0"
+                               placeholder="দাম বসান"
+                               className="w-20 bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-700 rounded px-1.5 py-0.5 text-xs font-black text-indigo-700 dark:text-indigo-300 outline-none focus:ring-2 focus:ring-indigo-500/30"
+                               value={item.product.salePrice || ""}
+                               onChange={(e) => updateItemCustomPrice(item.product.id, Number(e.target.value))}
+                             />
+                             <span className="text-[10px] text-slate-400 font-bold">x {item.quantity}</span>
+                           </div>
+                         ) : (
+                           <p className="text-xs text-slate-400 dark:text-slate-500 font-bold">৳{item.product.salePrice} x {item.quantity}</p>
+                         )}
                          <div className="flex items-center gap-2">
                            <div className="flex items-center gap-1 bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 rounded px-1.5 py-0.5">
                               <span className="text-[10px] text-slate-400 dark:text-slate-500 font-bold">৳</span>
@@ -700,15 +786,35 @@ export function POS({ user }: POSProps) {
         </div>
  
         <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 space-y-3 flex-shrink-0">
-          <div className="flex justify-between items-center bg-blue-50/30 dark:bg-blue-900/20 p-3 rounded-xl border border-blue-100/50 dark:border-blue-800/50">
-            <div>
-              <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-0.5">Payable Amount</p>
-              <p className="font-black text-2xl text-blue-600 dark:text-blue-400 leading-none">৳{Math.round(totalPayable)}</p>
+          <div className="bg-blue-50/30 dark:bg-blue-900/20 p-3 rounded-xl border border-blue-100/50 dark:border-blue-800/50 space-y-2">
+            <div className="flex justify-between items-center">
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-0.5">Payable Amount</p>
+                <p className="font-black text-2xl text-blue-600 dark:text-blue-400 leading-none">৳{Math.round(totalPayable)}</p>
+              </div>
+              {due > 0 && (
+                <div className="text-right">
+                  <p className="text-[10px] font-bold text-rose-400 dark:text-rose-500 uppercase tracking-wider mb-0.5">Due Amount (বকেয়া)</p>
+                  <p className="font-black text-lg text-rose-600 dark:text-rose-500 leading-none">৳{due.toFixed(0)}</p>
+                </div>
+              )}
+              {extraPaidOnInvoice > 0 && (
+                <div className="text-right">
+                  <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-0.5 font-bengali">ক্রেতা পাবে (অতিরিক্ত জমা)</p>
+                  <p className="font-black text-lg text-emerald-600 dark:text-emerald-400 leading-none">৳{extraPaidOnInvoice.toFixed(0)}</p>
+                </div>
+              )}
             </div>
-            {due > 0 && (
-              <div className="text-right">
-                <p className="text-[10px] font-bold text-rose-400 dark:text-rose-500 uppercase tracking-wider mb-0.5">Due Amount</p>
-                <p className="font-black text-lg text-rose-600 dark:text-rose-500 leading-none">৳{due.toFixed(0)}</p>
+            {activeCustomer && (activeCustomerPrevBalance !== 0 || extraPaidOnInvoice > 0) && (
+              <div className="pt-2 border-t border-blue-100 dark:border-blue-800/50 flex justify-between items-center text-xs font-bold font-bengali">
+                <span className="text-slate-500 dark:text-slate-400">
+                  {projectedCustomerBalance < 0 ? "বিলের পর মোট ক্রেতা পাবে:" : projectedCustomerBalance > 0 ? "বিলের পর মোট বকেয়া হবে:" : "বিলের পর মোট হিসাব:"}
+                </span>
+                <span className={cn(
+                  projectedCustomerBalance < 0 ? "text-emerald-600 dark:text-emerald-400" : projectedCustomerBalance > 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-600 dark:text-slate-300"
+                )}>
+                  {projectedCustomerBalance === 0 ? "পরিশোধিত (৳ ০)" : `৳ ${Math.round(Math.abs(projectedCustomerBalance)).toLocaleString()}`}
+                </span>
               </div>
             )}
           </div>
@@ -834,6 +940,82 @@ export function POS({ user }: POSProps) {
                     className="flex-1 py-3 px-8 bg-blue-600 text-white rounded-xl font-bold font-bengali hover:bg-blue-700 shadow-lg shadow-blue-900/20 disabled:opacity-50 transition-all"
                   >
                     {isSubmitting ? "লোডিং..." : "সংরক্ষণ করুন"}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Custom Price Prompt Modal for 'অন্যান্য' Product */}
+      <AnimatePresence>
+        {customPriceModalProduct && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl border border-slate-100 dark:border-slate-800"
+            >
+              <div className="px-6 py-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-white font-bengali">
+                    {customPriceModalProduct.bnName || customPriceModalProduct.name} - দাম বসান
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-bengali">ইচ্ছেমতো বিক্রয় মূল্য নির্ধারণ করুন</p>
+                </div>
+                <button
+                  onClick={() => setCustomPriceModalProduct(null)}
+                  className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-400"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const priceVal = Number(customPriceInput);
+                  if (!priceVal || priceVal <= 0) {
+                    showNotify("অনুগ্রহ করে সঠিক মূল্য (৳) লিখুন!", "error");
+                    return;
+                  }
+                  addToCart(customPriceModalProduct, undefined, priceVal);
+                  setCustomPriceModalProduct(null);
+                  setCustomPriceInput("");
+                }}
+                className="p-6 space-y-5"
+              >
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-600 dark:text-slate-300 font-bengali">পণ্যের বিক্রয় মূল্য (৳)</label>
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-indigo-600 dark:text-indigo-400 font-black text-lg">৳</span>
+                    <input
+                      type="number"
+                      step="any"
+                      min="1"
+                      required
+                      autoFocus
+                      placeholder="যেমন: ৫০০"
+                      className="w-full bg-slate-50 dark:bg-slate-800 border border-indigo-200 dark:border-indigo-700 rounded-xl py-3 pl-9 pr-4 text-slate-900 dark:text-white font-black text-lg focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                      value={customPriceInput}
+                      onChange={(e) => setCustomPriceInput(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setCustomPriceModalProduct(null)}
+                    className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-bold font-bengali text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
+                  >
+                    বাতিল
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white font-bold font-bengali text-sm hover:bg-indigo-700 shadow-lg shadow-indigo-500/20"
+                  >
+                    কার্টে যোগ করুন
                   </button>
                 </div>
               </form>

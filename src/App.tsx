@@ -123,6 +123,15 @@ export default function App() {
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
 
   useEffect(() => {
+    const loadBusiness = async () => {
+      try {
+        const data = await api.getBusiness();
+        setBusiness(data);
+      } catch (err) {
+        console.error("Failed to load business info:", err);
+      }
+    };
+
     // Initial Auth Check from persistent storage
     const checkAuth = async () => {
       const savedUser = sessionStorage.getItem("smart_business_user") || localStorage.getItem("smart_business_user");
@@ -154,20 +163,11 @@ export default function App() {
       } else {
         setUser(null);
       }
+      await loadBusiness();
       setIsInitializing(false);
     };
 
     checkAuth();
-
-    const loadBusiness = async () => {
-      try {
-        const data = await api.getBusiness();
-        setBusiness(data);
-      } catch (err) {
-        console.error("Failed to load business info:", err);
-      }
-    };
-    loadBusiness();
 
     const handlePrint = (e: any) => {
       setPrintHtml(e.detail.html);
@@ -258,34 +258,54 @@ export default function App() {
     }
   };
 
-  const handleLogin = (userData: User) => {
+  const handleLogin = async (userData: User) => {
+    const shopId = userData.businessId || "main-business";
+    setApiBusinessId(shopId);
     setUser(userData);
-    setApiBusinessId(userData.businessId || "main-business");
     sessionStorage.setItem("smart_business_user", JSON.stringify(userData));
     localStorage.setItem("smart_business_user", JSON.stringify(userData));
+
+    try {
+      const bizData = await api.getBusiness(shopId);
+      setBusiness(bizData);
+    } catch {}
 
     // If an activeTab was previously saved (e.g. before refresh), keep it if permitted
     const savedTab = localStorage.getItem("smart_business_active_tab");
     if (userData.role !== 'admin') {
-      const allowed = ['dashboard', 'pos', 'sales', 'approvals', 'products', 'customers', 'suppliers', 'accounting', 'due', 'sms', 'reports'].filter(t => t === 'approvals' || userData.permissions?.includes(t));
+      const allowed = ['dashboard', 'pos', 'sales', 'products', 'customers', 'suppliers', 'accounting', 'due', 'sms', 'reports'].filter(t => userData.permissions?.includes(t));
       if (savedTab && allowed.includes(savedTab)) {
         setActiveTab(savedTab);
       } else if (allowed.length > 0 && !allowed.includes(activeTab)) {
         setActiveTab(allowed[0]);
+      } else if (allowed.length === 0) {
+        setActiveTab("pos");
       }
     } else if (savedTab) {
       setActiveTab(savedTab);
     }
   };
 
+  const handleShopSwitch = (newBusiness: Business) => {
+    setBusiness(newBusiness);
+    setUser(prev => {
+      if (!prev) return null;
+      const updated = { ...prev, businessId: newBusiness.id };
+      sessionStorage.setItem("smart_business_user", JSON.stringify(updated));
+      localStorage.setItem("smart_business_user", JSON.stringify(updated));
+      return updated;
+    });
+  };
+
   const handleLogout = () => {
     setUser(null);
-    setApiBusinessId(null);
+    setApiBusinessId("main-business");
     setLoginEmail("");
     setLoginPassword("");
     sessionStorage.removeItem("smart_business_user");
     localStorage.removeItem("smart_business_user");
     localStorage.removeItem("smart_business_active_tab");
+    api.getBusiness("main-business").then(setBusiness).catch(() => {});
   };
 
   const handleFinalPrint = () => {
@@ -352,7 +372,7 @@ export default function App() {
   const canAccessTab = (tabId: string) => {
     if (!user) return false;
     if (user.role === 'admin') return true; 
-    if (tabId === 'approvals') return false; // Strictly admin only
+    if (tabId === 'approvals' || tabId === 'settings') return false; // Strictly admin only
     
     // Explicitly check permissions array
     if (user.permissions && Array.isArray(user.permissions)) {
@@ -599,7 +619,7 @@ export default function App() {
                 business={business}
               />
               
-              <main className="flex-1 overflow-y-auto bg-slate-50 dark:bg-slate-950 transition-colors duration-300 custom-scrollbar pb-20 md:pb-0">
+              <main key={user.businessId || business?.id || "main-business"} className="flex-1 overflow-y-auto bg-slate-50 dark:bg-slate-950 transition-colors duration-300 custom-scrollbar pb-20 md:pb-0">
                 <Suspense fallback={<LoadingFallback />}>
                   {activeTab === "dashboard" && canAccessTab("dashboard") && <Dashboard user={user} />}
                   {activeTab === "pos" && canAccessTab("pos") && <POS user={user} />}
@@ -613,7 +633,7 @@ export default function App() {
                   {activeTab === "due" && canAccessTab("due") && <DueManagement user={user} />}
                   {activeTab === "sms" && canAccessTab("sms") && <SMSModule />}
                   {activeTab === "users" && canAccessTab("users") && <UserManagement user={user} />}
-                  {activeTab === "settings" && canAccessTab("settings") && <Settings onBusinessUpdate={setBusiness} />}
+                  {activeTab === "settings" && canAccessTab("settings") && <Settings onBusinessUpdate={setBusiness} onShopSwitch={handleShopSwitch} />}
                   
                   {/* Access Denied View */}
                   {user && !canAccessTab(activeTab) && (

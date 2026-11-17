@@ -85,7 +85,6 @@ export function UserManagement({ user }: UserManagementProps) {
     { id: "sms", label: "এসএমএস" },
     { id: "reports", label: "রিপোর্ট" },
     { id: "users", label: "ইউজার ম্যানেজমেন্ট" },
-    { id: "settings", label: "সেটিংস" },
   ];
 
   const handlePermissionChange = (moduleId: string) => {

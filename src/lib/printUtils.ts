@@ -131,17 +131,25 @@ export const printInvoice = async (sale: Sale, isTemporary?: boolean) => {
   const isThermal = printerType === 'thermal';
   const isTemp = isTemporary ?? sale.isTemporary ?? (sale.approvalStatus === 'pending');
 
-  // Fetch customer stats to show total due
+  // Fetch customer stats to show total due or advance ('ক্রেতা পাবে')
   let customerDue = 0;
   let previousDue = 0;
+  const saleDueVal = Number(sale.dueAmount) || 0;
   
   if (sale.customerId && sale.customerId !== 'walking') {
     try {
       const customers = await api.getCustomers();
       const customer = customers.find(c => c.id === sale.customerId);
       if (customer) {
-        customerDue = customer.dueAmount;
-        previousDue = Math.max(0, customerDue - sale.dueAmount);
+        const currentStoredDue = Number(customer.dueAmount) || 0;
+        if (isTemp) {
+          // For temporary invoice, customer.dueAmount has not been modified yet
+          previousDue = currentStoredDue;
+          customerDue = currentStoredDue + saleDueVal;
+        } else {
+          customerDue = currentStoredDue;
+          previousDue = currentStoredDue - saleDueVal;
+        }
       }
     } catch (e) {
       console.error("Failed to fetch customer for print", e);
@@ -222,19 +230,19 @@ export const printInvoice = async (sale: Sale, isTemporary?: boolean) => {
         <span>জমা পরিশোধ:</span>
         <span>৳ ${sale.paidAmount}</span>
       </div>
-      <div style="display: flex; justify-content: space-between; padding: 4px 0; color: #e11d48; font-weight: bold; border-bottom: 1px dashed #e2e8f0; padding-bottom: 8px;">
-        <span>এই চালানে বাকি:</span>
-        <span>৳ ${sale.dueAmount}</span>
+      <div style="display: flex; justify-content: space-between; padding: 4px 0; color: ${saleDueVal < 0 ? '#059669' : '#e11d48'}; font-weight: bold; border-bottom: 1px dashed #e2e8f0; padding-bottom: 8px;">
+        <span>${saleDueVal < 0 ? 'এই চালানে ক্রেতা পাবে (অতিরিক্ত জমা):' : 'এই চালানে বাকি:'}</span>
+        <span>৳ ${Math.abs(saleDueVal)}</span>
       </div>
       
       ${sale.customerId && sale.customerId !== 'walking' ? `
-        <div style="display: flex; justify-content: space-between; padding: 6px 0; margin-top: 4px; color: #64748b; font-size: 13px;">
-          <span>পূর্বের বকেয়া (+):</span>
-          <span>৳ ${previousDue}</span>
+        <div style="display: flex; justify-content: space-between; padding: 6px 0; margin-top: 4px; color: ${previousDue < 0 ? '#059669' : '#64748b'}; font-size: 13px;">
+          <span>${previousDue < 0 ? 'পূর্বের ক্রেতা পাবে (-):' : 'পূর্বের বকেয়া (+):'}</span>
+          <span>৳ ${Math.abs(previousDue)}</span>
         </div>
-        <div style="display: flex; justify-content: space-between; padding: 10px 0; margin-top: 5px; border-top: 2px solid #2563eb; font-weight: bold; font-size: 18px; color: #1e293b;">
-          <span>সর্বমোট বকেয়া:</span>
-          <span>৳ ${customerDue}</span>
+        <div style="display: flex; justify-content: space-between; padding: 10px 0; margin-top: 5px; border-top: 2px solid #2563eb; font-weight: bold; font-size: 18px; color: ${customerDue < 0 ? '#059669' : '#1e293b'};">
+          <span>${customerDue < 0 ? 'সর্বমোট ক্রেতা পাবে:' : 'সর্বমোট বকেয়া:'}</span>
+          <span>৳ ${Math.abs(customerDue)}</span>
         </div>
       ` : ''}
     </div>
@@ -330,8 +338,12 @@ export const printCustomerStatement = async (customer: any, sales: any[]) => {
           <div style="color: #64748b; font-size: 14px;">ঠিকানা: ${customer.address || 'N/A'}</div>
         </div>
         <div style="text-align: right;">
-          <div style="color:#e11d48; font-size: 12px; text-transform: uppercase;">বর্তমান বকেয়া:</div>
-          <div style="font-weight:bold; font-size: 24px; color: #e11d48; margin-top: 5px;">৳ ${customer.dueAmount}</div>
+          <div style="color:${(Number(customer.dueAmount) || 0) < 0 ? '#059669' : '#e11d48'}; font-size: 12px; text-transform: uppercase;">
+            ${(Number(customer.dueAmount) || 0) < 0 ? 'বর্তমান ক্রেতা পাবে (অ্যাডভান্স):' : 'বর্তমান বকেয়া:'}
+          </div>
+          <div style="font-weight:bold; font-size: 24px; color: ${(Number(customer.dueAmount) || 0) < 0 ? '#059669' : '#e11d48'}; margin-top: 5px;">
+            ৳ ${Math.abs(Number(customer.dueAmount) || 0)}
+          </div>
           <div style="color: #64748b; font-size: 14px; margin-top: 5px;">মোট কেনাকাটা: ৳ ${customer.totalSpent}</div>
         </div>
       </div>
@@ -345,19 +357,24 @@ export const printCustomerStatement = async (customer: any, sales: any[]) => {
           <th>চালান নং</th>
           <th style="text-align: right;">মোট টাকা</th>
           <th style="text-align: right;">পেমেন্ট</th>
-          <th style="text-align: right;">বকেয়া</th>
+          <th style="text-align: right;">বকেয়া / ক্রেতা পাবে</th>
         </tr>
       </thead>
       <tbody>
-        ${sales.map(sale => `
+        ${sales.map(sale => {
+          const sDue = Number(sale.dueAmount) || 0;
+          return `
           <tr>
             <td>${sale.createdAt ? formatDhakaDate(sale.createdAt) : 'N/A'}</td>
             <td>${sale.invoiceNo}</td>
-            <td style="text-align: right;">৳ ${sale.totalAmount}</td>
+            <td style="text-align: right;">৳ ${sale.payableAmount ?? sale.totalAmount}</td>
             <td style="text-align: right;">৳ ${sale.paidAmount}</td>
-            <td style="text-align: right;">৳ ${sale.dueAmount}</td>
+            <td style="text-align: right; color: ${sDue < 0 ? '#059669' : sDue > 0 ? '#e11d48' : '#1e293b'}; font-weight: ${sDue !== 0 ? 'bold' : 'normal'};">
+              ${sDue < 0 ? `ক্রেতা পাবে ৳ ${Math.abs(sDue)}` : `৳ ${sDue}`}
+            </td>
           </tr>
-        `).join('')}
+        `;
+        }).join('')}
         ${sales.length === 0 ? '<tr><td colspan="5" style="text-align:center; padding: 30px; color: #94a3b8;">কোনো লেনদেন পাওয়া যায়নি</td></tr>' : ''}
       </tbody>
     </table>
@@ -433,8 +450,12 @@ export const printPaymentReceipt = async (data: {
     </div>
 
     <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px; border: 2px dashed #cbd5e1; border-radius: 12px;">
-      <div style="font-size: 18px; font-weight: bold; color: #475569;">অবশিষ্ট বকেয়া:</div>
-      <div style="font-size: 24px; font-weight: 900; color: #e11d48;">৳ ${data.dueRemaining}</div>
+      <div style="font-size: 18px; font-weight: bold; color: #475569;">
+        ${(Number(data.dueRemaining) || 0) < 0 ? 'ক্রেতা পাবে (অতিরিক্ত জমা):' : 'অবশিষ্ট বকেয়া:'}
+      </div>
+      <div style="font-size: 24px; font-weight: 900; color: ${(Number(data.dueRemaining) || 0) < 0 ? '#059669' : '#e11d48'};">
+        ৳ ${Math.abs(Number(data.dueRemaining) || 0)}
+      </div>
     </div>
 
     <div style="margin-top: 100px; display: flex; justify-content: space-between;">

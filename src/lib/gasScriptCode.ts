@@ -77,12 +77,64 @@ function onOpen() {
 }
 
 /**
+ * Resolve or Auto-Create the target Google Spreadsheet for a specific shop (businessId / spreadsheetId)
+ */
+function getTargetSpreadsheet(paramsOrPayload, allowAutoCreate) {
+  const sheetId = paramsOrPayload && (paramsOrPayload.spreadsheetId || paramsOrPayload.sheetId);
+  const bizId = paramsOrPayload && paramsOrPayload.businessId;
+  const props = PropertiesService.getScriptProperties();
+
+  if (sheetId) {
+    try {
+      const opened = SpreadsheetApp.openById(sheetId);
+      if (bizId && bizId !== 'main-business') {
+        props.setProperty('SHOP_SHEET_' + bizId, sheetId);
+      }
+      return opened;
+    } catch (e) {}
+  }
+
+  if (bizId && bizId !== 'main-business') {
+    try {
+      const savedSheetId = props.getProperty('SHOP_SHEET_' + bizId);
+      if (savedSheetId) {
+        return SpreadsheetApp.openById(savedSheetId);
+      }
+    } catch (e) {}
+
+    if (allowAutoCreate !== false) {
+      try {
+        const rawShopName =
+          paramsOrPayload.shopName ||
+          (paramsOrPayload.data && paramsOrPayload.data.business && paramsOrPayload.data.business.name) ||
+          (paramsOrPayload.business && paramsOrPayload.business.name) ||
+          ('নতুন শপ - ' + bizId);
+        const shopTitle = rawShopName + ' - হিসাবপাতি ডাটাবেজ';
+        const createdSS = SpreadsheetApp.create(shopTitle);
+        props.setProperty('SHOP_SHEET_' + bizId, createdSS.getId());
+        initializeAllSheets(createdSS);
+        try {
+          const defaultSheet = createdSS.getSheetByName('Sheet1');
+          if (defaultSheet && createdSS.getSheets().length > 1) {
+            createdSS.deleteSheet(defaultSheet);
+          }
+        } catch (delErr) {}
+        return createdSS;
+      } catch (createErr) {}
+    }
+  }
+
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
+
+/**
  * Handle GET Requests (Health Check, Fetch Data, Dashboard Stats)
  */
 function doGet(e) {
   try {
-    const action = e?.parameter?.action || 'ping';
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const params = (e && e.parameter) ? e.parameter : {};
+    const action = params.action || 'ping';
+    const ss = getTargetSpreadsheet(params, true);
 
     if (action === 'ping') {
       return jsonResponse({
@@ -90,12 +142,17 @@ function doGet(e) {
         message: 'হিসাবপাতি গুগল শিট ডাটাবেজ সক্রিয় রয়েছে।',
         spreadsheetName: ss.getName(),
         spreadsheetId: ss.getId(),
+        spreadsheetUrl: ss.getUrl(),
         timestamp: new Date().toISOString()
       });
     }
 
     if (action === 'fetchData' || action === 'getAllData') {
-      return jsonResponse(readAllSpreadsheetData(ss));
+      const allData = readAllSpreadsheetData(ss);
+      allData.spreadsheetId = ss.getId();
+      allData.spreadsheetUrl = ss.getUrl();
+      allData.spreadsheetName = ss.getName();
+      return jsonResponse(allData);
     }
 
     if (action === 'getDashboard') {
@@ -109,7 +166,7 @@ function doGet(e) {
 }
 
 /**
- * Handle POST Requests (Full Sync, Entity Sync, Restore)
+ * Handle POST Requests (Create Shop Sheet, Full Sync, Entity Sync, Restore)
  */
 function doPost(e) {
   try {
@@ -121,7 +178,92 @@ function doPost(e) {
     }
 
     const action = payload.action || 'fullSync';
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    // 0a. Automatically delete a shop's dedicated Google Sheet when the shop is deleted
+    if (action === 'deleteShopSpreadsheet') {
+      const props = PropertiesService.getScriptProperties();
+      const bizId = payload.businessId || '';
+      const targetSheetId = payload.spreadsheetId || payload.sheetId || (bizId ? props.getProperty('SHOP_SHEET_' + bizId) : '');
+      let deleted = false;
+
+      if (targetSheetId) {
+        try {
+          DriveApp.getFileById(targetSheetId).setTrashed(true);
+          deleted = true;
+        } catch (driveErr) {
+          try {
+            const targetSS = SpreadsheetApp.openById(targetSheetId);
+            targetSS.rename('[DELETED] ' + targetSS.getName());
+            targetSS.getSheets().forEach(sh => sh.clear());
+            deleted = true;
+          } catch (ssErr) {}
+        }
+      }
+      if (bizId) {
+        try {
+          props.deleteProperty('SHOP_SHEET_' + bizId);
+        } catch (e) {}
+      }
+      return jsonResponse({
+        success: true,
+        deleted: deleted,
+        message: 'শপের গুগল শিট স্বয়ংক্রিয়ভাবে ডিলিট করা হয়েছে!'
+      });
+    }
+
+    const ss = getTargetSpreadsheet(payload, action === 'createShopSpreadsheet' || action === 'fullSync');
+
+    // 0b. Automatically rename a shop's dedicated Google Sheet when the shop's name is changed
+    if (action === 'renameShopSpreadsheet') {
+      const cleanShopName = (payload.shopName || (payload.business && payload.business.name) || '').trim();
+      if (cleanShopName) {
+        const newSheetTitle = cleanShopName + ' - হিসাবপাতি ডাটাবেজ';
+        try {
+          ss.rename(newSheetTitle);
+        } catch (renErr) {}
+        try {
+          if (payload.business) {
+            writeSettingsSheet(ss, payload.business);
+          }
+          const dashSheet = ss.getSheetByName(SHEETS.DASHBOARD);
+          if (dashSheet) {
+            dashSheet.getRange('A1').setValue(cleanShopName + ' - লাইভ ড্যাশবোর্ড ও অটো রিপোর্ট');
+          }
+        } catch (updErr) {}
+      }
+      return jsonResponse({
+        success: true,
+        message: 'শপের গুগল শিটের নাম সফলভাবে পরিবর্তন হয়েছে!',
+        spreadsheetId: ss.getId(),
+        spreadsheetUrl: ss.getUrl(),
+        spreadsheetName: ss.getName(),
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // 0c. Automatically create & initialize a brand-new Google Sheet for a newly created shop
+    if (action === 'createShopSpreadsheet') {
+      const initData = payload.data || {
+        business: payload.business || { name: payload.shopName || ss.getName() },
+        products: [],
+        customers: [],
+        sales: [],
+        suppliers: [],
+        expenses: [],
+        categories: [],
+        users: []
+      };
+      const result = performFullDatabaseSync(ss, initData);
+      return jsonResponse({
+        success: true,
+        message: 'নতুন শপের জন্য আলাদা গুগল শিট স্বয়ংক্রিয়ভাবে তৈরি ও যুক্ত হয়েছে!',
+        spreadsheetId: ss.getId(),
+        spreadsheetUrl: ss.getUrl(),
+        spreadsheetName: ss.getName(),
+        details: result,
+        timestamp: new Date().toISOString()
+      });
+    }
 
     // 1. Full Synchronization of entire app state
     if (action === 'fullSync') {
@@ -130,6 +272,9 @@ function doPost(e) {
       return jsonResponse({
         success: true,
         message: 'সকল তথ্য সফলভাবে গুগল শিটে সিঙ্ক হয়েছে।',
+        spreadsheetId: ss.getId(),
+        spreadsheetUrl: ss.getUrl(),
+        spreadsheetName: ss.getName(),
         details: result,
         timestamp: new Date().toISOString()
       });
@@ -138,32 +283,42 @@ function doPost(e) {
     // 2. Real-time Single Entity Sync
     if (action === 'syncProduct') {
       syncSingleProduct(ss, payload.item, payload.operation || 'upsert');
-      return jsonResponse({ success: true, message: 'পণ্য শিটে আপডেট হয়েছে' });
+      return jsonResponse({ success: true, message: 'পণ্য শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
     }
 
     if (action === 'syncSale') {
-      syncSingleSale(ss, payload.item);
-      return jsonResponse({ success: true, message: 'বিক্রয় মেমো শিটে যুক্ত হয়েছে' });
+      syncSingleSale(ss, payload.item, payload.operation || 'upsert');
+      return jsonResponse({ success: true, message: 'বিক্রয় মেমো শিটে যুক্ত হয়েছে', spreadsheetId: ss.getId() });
     }
 
     if (action === 'syncCustomer') {
       syncSingleCustomer(ss, payload.item, payload.operation || 'upsert');
-      return jsonResponse({ success: true, message: 'ক্রেতার তথ্য শিটে আপডেট হয়েছে' });
+      return jsonResponse({ success: true, message: 'ক্রেতার তথ্য শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
     }
 
     if (action === 'syncSupplier') {
       syncSingleSupplier(ss, payload.item, payload.operation || 'upsert');
-      return jsonResponse({ success: true, message: 'সরবরাহকারী শিটে আপডেট হয়েছে' });
+      return jsonResponse({ success: true, message: 'সরবরাহকারী শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
     }
 
     if (action === 'syncExpense') {
-      syncSingleExpense(ss, payload.item);
-      return jsonResponse({ success: true, message: 'খরচ শিটে যুক্ত হয়েছে' });
+      syncSingleExpense(ss, payload.item, payload.operation || 'upsert');
+      return jsonResponse({ success: true, message: 'খরচ শিটে যুক্ত হয়েছে', spreadsheetId: ss.getId() });
+    }
+
+    if (action === 'syncUser') {
+      syncSingleUser(ss, payload.item, payload.operation || 'upsert');
+      return jsonResponse({ success: true, message: 'ইউজার শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
+    }
+
+    if (action === 'syncCategory') {
+      syncSingleCategory(ss, payload.item, payload.operation || 'upsert');
+      return jsonResponse({ success: true, message: 'ক্যাটাগরি শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
     }
 
     if (action === 'recordPayment') {
       syncCustomerPayment(ss, payload);
-      return jsonResponse({ success: true, message: 'পেমেন্ট শিটে আপডেট হয়েছে' });
+      return jsonResponse({ success: true, message: 'পেমেন্ট শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
     }
 
     return jsonResponse({ error: 'অজানা পোস্ট অ্যাকশন', action: action });
@@ -177,7 +332,7 @@ function doPost(e) {
  */
 function performFullDatabaseSync(ss, data) {
   // Ensure all tabs exist with beautiful headers
-  initializeAllSheets();
+  initializeAllSheets(ss);
 
   const counts = {
     products: 0,
@@ -248,8 +403,8 @@ function performFullDatabaseSync(ss, data) {
 /**
  * 1. Initialize and ensure all sheets exist with standard headers
  */
-function initializeAllSheets() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+function initializeAllSheets(targetSS) {
+  const ss = targetSS || SpreadsheetApp.getActiveSpreadsheet();
 
   const configs = [
     {
@@ -752,11 +907,27 @@ function syncSingleProduct(ss, product, operation) {
   }
 }
 
-function syncSingleSale(ss, sale) {
+function syncSingleSale(ss, sale, operation) {
   let salesSheet = ss.getSheetByName(SHEETS.SALES);
   if (!salesSheet) {
-    initializeAllSheets();
+    initializeAllSheets(ss);
     salesSheet = ss.getSheetByName(SHEETS.SALES);
+  }
+  if (!sale) return;
+
+  const invKey = String(sale.invoiceNo || sale.id || '');
+  const sData = salesSheet.getDataRange().getValues();
+  let foundRow = -1;
+  for (let i = 1; i < sData.length; i++) {
+    if (String(sData[i][0]) === invKey) {
+      foundRow = i + 1;
+      break;
+    }
+  }
+
+  if (operation === 'delete') {
+    if (foundRow !== -1) salesSheet.deleteRow(foundRow);
+    return;
   }
 
   let itemsSummary = '';
@@ -767,7 +938,7 @@ function syncSingleSale(ss, sale) {
   const payMethodName = sale.paymentMethod === 'mobile_pay' ? 'বিকাশ/নগদ' : (sale.paymentMethod === 'card' ? 'কার্ড' : 'নগদ ক্যাশ');
 
   const rowValues = [
-    sale.invoiceNo || sale.id || '',
+    invKey,
     formatDhakaDateTime(sale.createdAt || new Date()),
     sale.customerName || 'সাধারণ ক্রেতা',
     sale.customerPhone || '',
@@ -782,10 +953,14 @@ function syncSingleSale(ss, sale) {
     sale.userName || sale.userId || 'এডমিন'
   ];
 
-  salesSheet.appendRow(rowValues);
+  if (foundRow !== -1) {
+    salesSheet.getRange(foundRow, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    salesSheet.appendRow(rowValues);
+  }
 
-  // Also decrement stock in Products sheet
-  if (Array.isArray(sale.items)) {
+  // Also decrement stock in Products sheet ONLY for confirmed (non-temporary) sales
+  if (!sale.isTemporary && Array.isArray(sale.items)) {
     const prodSheet = ss.getSheetByName(SHEETS.PRODUCTS);
     if (prodSheet) {
       const pData = prodSheet.getDataRange().getValues();
@@ -875,9 +1050,24 @@ function syncSingleSupplier(ss, supplier, operation) {
   }
 }
 
-function syncSingleExpense(ss, expense) {
+function syncSingleExpense(ss, expense, operation) {
   let sheet = ss.getSheetByName(SHEETS.EXPENSES);
   if (!sheet) return;
+  if (!expense) return;
+
+  const data = sheet.getDataRange().getValues();
+  let foundRow = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(expense.id)) {
+      foundRow = i + 1;
+      break;
+    }
+  }
+
+  if (operation === 'delete') {
+    if (foundRow !== -1) sheet.deleteRow(foundRow);
+    return;
+  }
 
   const rowValues = [
     expense.id || '',
@@ -888,7 +1078,82 @@ function syncSingleExpense(ss, expense) {
     expense.userName || expense.userId || 'এডমিন'
   ];
 
-  sheet.appendRow(rowValues);
+  if (foundRow !== -1) {
+    sheet.getRange(foundRow, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sheet.appendRow(rowValues);
+  }
+}
+
+function syncSingleUser(ss, user, operation) {
+  let sheet = ss.getSheetByName(SHEETS.USERS);
+  if (!sheet) return;
+  if (!user) return;
+
+  const data = sheet.getDataRange().getValues();
+  let foundRow = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(user.id)) {
+      foundRow = i + 1;
+      break;
+    }
+  }
+
+  if (operation === 'delete') {
+    if (foundRow !== -1) sheet.deleteRow(foundRow);
+    return;
+  }
+
+  const roleText = user.role === 'admin' ? 'অ্যাডমিন' : (user.role === 'manager' ? 'ম্যানেজার' : 'সেলসম্যান');
+  const perms = Array.isArray(user.permissions) ? user.permissions.join(', ') : 'সকল পারমিশন';
+  const rowValues = [
+    user.id || '',
+    user.name || 'ইউজার',
+    user.email || '',
+    user.phone || '',
+    roleText,
+    perms,
+    formatDhakaDateTime(user.lastSeen || new Date()),
+    user.password || '123456'
+  ];
+
+  if (foundRow !== -1) {
+    sheet.getRange(foundRow, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sheet.appendRow(rowValues);
+  }
+}
+
+function syncSingleCategory(ss, category, operation) {
+  let sheet = ss.getSheetByName(SHEETS.CATEGORIES);
+  if (!sheet) return;
+  if (!category) return;
+
+  const data = sheet.getDataRange().getValues();
+  let foundRow = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(category.id)) {
+      foundRow = i + 1;
+      break;
+    }
+  }
+
+  if (operation === 'delete') {
+    if (foundRow !== -1) sheet.deleteRow(foundRow);
+    return;
+  }
+
+  const rowValues = [
+    category.id || '',
+    category.name || '',
+    category.description || ''
+  ];
+
+  if (foundRow !== -1) {
+    sheet.getRange(foundRow, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sheet.appendRow(rowValues);
+  }
 }
 
 function syncCustomerPayment(ss, payload) {
@@ -901,7 +1166,7 @@ function syncCustomerPayment(ss, payload) {
     if (String(data[i][0]) === String(customerId)) {
       const currentDue = Number(data[i][4]) || 0;
       const currentSpent = Number(data[i][5]) || 0;
-      const newDue = Math.max(0, currentDue - (Number(amount) || 0));
+      const newDue = currentDue - (Number(amount) || 0);
       const newSpent = currentSpent + (Number(amount) || 0);
 
       cSheet.getRange(i + 1, 5).setValue(newDue);

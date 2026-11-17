@@ -4,9 +4,9 @@
  */
 
 import { useState, useEffect, FormEvent, useRef, ChangeEvent } from "react";
-import { api } from "../services/api";
+import { api, isOtherProduct } from "../services/api";
 import { Product, Category, User } from "../types";
-import { Package, Plus, Search, Filter, MoreVertical, Edit, Trash2, FileSpreadsheet, Download, Scan, X } from "lucide-react";
+import { Package, Plus, Search, Filter, MoreVertical, Edit, Trash2, FileSpreadsheet, Download, Scan, X, Sparkles } from "lucide-react";
 import * as XLSX from 'xlsx';
 import { cn } from "../lib/utils";
 import { BarcodeScanner } from "./BarcodeScanner";
@@ -43,7 +43,8 @@ export function ProductList({ user }: ProductListProps) {
     expiryDate: "",
     expiredQtyToRemove: 0,
     expiredBarcodesToRemove: [],
-  });
+    isCustomProduct: false,
+  } as any);
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error'} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -139,12 +140,28 @@ export function ProductList({ user }: ProductListProps) {
         }
       }
 
-      const finalData: Partial<Product> = { 
-        ...formData, 
-        categoryId: finalCategoryId,
-        stock: finalStock,
-        barcodes: finalBarcodes
-      };
+      const isCustom = Boolean(formData.isCustomProduct || isOtherProduct(formData));
+      const finalData: Partial<Product> = isCustom
+        ? {
+            name: (formData.name || "").trim() || "অন্যান্য",
+            bnName: (formData.bnName || "").trim() || "অন্যান্য",
+            sku: (formData.sku || "").trim() || "OTHER",
+            categoryId: finalCategoryId || "general",
+            unit: formData.unit || "পিস",
+            purchasePrice: 0,
+            salePrice: 0,
+            stock: 0,
+            minStock: 0,
+            barcodes: [],
+            isCustomProduct: true,
+          }
+        : { 
+            ...formData, 
+            categoryId: finalCategoryId,
+            stock: finalStock,
+            barcodes: finalBarcodes,
+            isCustomProduct: false,
+          };
 
       // Remove the UI-only helper field before sending to API
       delete (finalData as any).expiredQtyToRemove;
@@ -155,7 +172,7 @@ export function ProductList({ user }: ProductListProps) {
         showNotify("পণ্য আপডেট করা হয়েছে");
       } else {
         await api.createProduct(finalData);
-        showNotify("নতুন পণ্য যোগ করা হয়েছে");
+        showNotify(isCustom ? "'অন্যান্য' পণ্য সফলভাবে যোগ করা হয়েছে" : "নতুন পণ্য যোগ করা হয়েছে");
       }
       setShowModal(false);
       setEditingProduct(null);
@@ -163,6 +180,32 @@ export function ProductList({ user }: ProductListProps) {
       loadData();
     } catch (err) {
       showNotify("ব্যর্থ হয়েছে!", "error");
+    }
+  };
+
+  const handleQuickAddOtherProduct = async () => {
+    const existingOther = products.find(p => isOtherProduct(p));
+    if (existingOther) {
+      showNotify("'অন্যান্য' পণ্য ইতিমধ্যে তালিকায় যুক্ত আছে!", "error");
+      return;
+    }
+    try {
+      await api.createProduct({
+        name: "অন্যান্য",
+        bnName: "অন্যান্য",
+        sku: "OTHER",
+        categoryId: categories[0]?.id || "general",
+        unit: "পিস",
+        purchasePrice: 0,
+        salePrice: 0,
+        stock: 0,
+        minStock: 0,
+        isCustomProduct: true,
+      });
+      showNotify("'অন্যান্য' পণ্য সফলভাবে যোগ করা হয়েছে (স্টক ও নির্ধারিত মূল্য ছাড়া)");
+      loadData();
+    } catch (err) {
+      showNotify("'অন্যান্য' পণ্য যোগ করা সম্ভব হয়নি", "error");
     }
   };
 
@@ -204,7 +247,8 @@ export function ProductList({ user }: ProductListProps) {
       minStock: 5,
       expiryDate: "",
       expiredQtyToRemove: 0,
-    });
+      isCustomProduct: false,
+    } as any);
   };
 
   const downloadSampleExcel = () => {
@@ -288,9 +332,10 @@ export function ProductList({ user }: ProductListProps) {
     setEditingProduct(product);
     setFormData({
       ...product,
+      isCustomProduct: isOtherProduct(product),
       expiredQtyToRemove: 0,
       expiredBarcodesToRemove: []
-    });
+    } as any);
     setShowModal(true);
   };
 
@@ -335,6 +380,16 @@ export function ProductList({ user }: ProductListProps) {
               <FileSpreadsheet size={18} />
               <span>ইমপোর্ট (Excel)</span>
             </button>
+            {!products.some(p => isOtherProduct(p)) && (
+              <button 
+                onClick={handleQuickAddOtherProduct}
+                className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/20 font-bengali text-sm font-bold"
+                title="কোনো ডিটেইলস, স্টক বা মূল্য ছাড়াই 'অন্যান্য' পণ্য যোগ করুন"
+              >
+                <Sparkles size={18} />
+                <span>'অন্যান্য' পণ্য যোগ করুন</span>
+              </button>
+            )}
             <button 
               onClick={openAddModal}
               className="flex items-center justify-center gap-2 px-4 py-2 bg-primary text-white rounded-xl hover:bg-primary/90 transition-colors shadow-lg shadow-primary/20 font-bengali text-sm"
@@ -413,21 +468,26 @@ export function ProductList({ user }: ProductListProps) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filtered.map((product) => (
+              {filtered.map((product) => {
+                const isOther = isOtherProduct(product);
+                const isLowStock = !isOther && product.stock <= product.minStock;
+                return (
                 <tr key={product.id} className={cn(
                   "hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors animate-in fade-in duration-300",
-                  product.stock <= product.minStock ? "bg-rose-50/40 dark:bg-rose-900/10" : ""
+                  isLowStock ? "bg-rose-50/40 dark:bg-rose-900/10" : isOther ? "bg-indigo-50/30 dark:bg-indigo-950/20" : ""
                 )}>
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
                       <div className={cn(
                         "w-10 h-10 rounded-lg flex items-center justify-center relative",
-                        product.stock <= product.minStock 
-                          ? "bg-rose-100 text-rose-500 dark:bg-rose-900/30 dark:text-rose-400" 
-                          : "bg-slate-50 dark:bg-slate-800 text-slate-300 dark:text-slate-600"
+                        isOther
+                          ? "bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400"
+                          : isLowStock 
+                            ? "bg-rose-100 text-rose-500 dark:bg-rose-900/30 dark:text-rose-400" 
+                            : "bg-slate-50 dark:bg-slate-800 text-slate-300 dark:text-slate-600"
                       )}>
                         <Package size={20} />
-                        {product.stock <= product.minStock && (
+                        {isLowStock && (
                           <span className="absolute -top-1 -right-1 flex h-3 w-3">
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
                             <span className="relative inline-flex rounded-full h-3 w-3 bg-rose-500"></span>
@@ -437,21 +497,33 @@ export function ProductList({ user }: ProductListProps) {
                       <div>
                         <div className="flex items-center gap-2">
                           <p className="font-bold text-slate-700 dark:text-slate-200">{product.bnName || product.name}</p>
-                          {product.stock <= product.minStock && (
+                          {isOther ? (
+                            <span className="bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 text-[10px] px-2 py-0.5 rounded-full font-bold font-bengali">কাস্টম পণ্য</span>
+                          ) : isLowStock && (
                             <span className="bg-rose-100 dark:bg-rose-900/40 text-rose-600 dark:text-rose-400 text-[10px] px-1.5 py-0.5 rounded-full font-bold font-bengali">স্টক কম</span>
                           )}
                         </div>
-                        <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider font-sans">{product.sku}</p>
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider font-sans">{isOther ? "NO-STOCK / OPEN-PRICE" : product.sku}</p>
                       </div>
                     </div>
                   </td>
                   <td className="px-6 py-4 text-slate-600 dark:text-slate-400 text-sm">
-                    {categories.find(c => c.id === product.categoryId)?.name || "ক্যাটাগরি নেই"}
+                    {isOther ? "সকল / অন্যান্য" : (categories.find(c => c.id === product.categoryId)?.name || "ক্যাটাগরি নেই")}
                   </td>
-                  <td className="px-6 py-4 font-bold text-slate-900 dark:text-slate-100">৳ {product.purchasePrice}</td>
-                  <td className="px-6 py-4 font-bold text-primary dark:text-blue-400">৳ {product.salePrice}</td>
+                  <td className="px-6 py-4 font-bold text-slate-900 dark:text-slate-100">
+                    {isOther ? <span className="text-xs text-slate-400 font-normal">প্রযোজ্য নয়</span> : `৳ ${product.purchasePrice}`}
+                  </td>
+                  <td className="px-6 py-4 font-bold text-primary dark:text-blue-400">
+                    {isOther ? (
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-300 text-xs font-bold">
+                        ইচ্ছেমতো দাম (POS)
+                      </span>
+                    ) : (
+                      `৳ ${product.salePrice}`
+                    )}
+                  </td>
                   <td className="px-6 py-4">
-                    {product.expiryDate ? (
+                    {!isOther && product.expiryDate ? (
                       <div className="flex flex-col">
                         <span className={cn(
                           "text-xs font-bold font-bengali",
@@ -474,15 +546,21 @@ export function ProductList({ user }: ProductListProps) {
                     )}
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex flex-col gap-1">
-                      <span className={`font-bold text-sm ${product.stock <= product.minStock ? 'text-rose-500' : 'text-slate-900 dark:text-slate-100'}`}>{product.stock} {product.unit}</span>
-                      <div className="w-20 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full rounded-full ${product.stock <= product.minStock ? 'bg-rose-500' : 'bg-emerald-500'}`} 
-                          style={{ width: `${Math.min(100, (product.stock / (product.minStock || 10) * 2) * 100)}%` }}
-                        />
+                    {isOther ? (
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 text-xs font-bold">
+                        স্টক বিহীন
+                      </span>
+                    ) : (
+                      <div className="flex flex-col gap-1">
+                        <span className={`font-bold text-sm ${product.stock <= product.minStock ? 'text-rose-500' : 'text-slate-900 dark:text-slate-100'}`}>{product.stock} {product.unit}</span>
+                        <div className="w-20 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                          <div 
+                            className={`h-full rounded-full ${product.stock <= product.minStock ? 'bg-rose-500' : 'bg-emerald-500'}`} 
+                            style={{ width: `${Math.min(100, (product.stock / (product.minStock || 10) * 2) * 100)}%` }}
+                          />
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex items-center justify-end gap-2 text-slate-400 dark:text-slate-500">
@@ -506,7 +584,8 @@ export function ProductList({ user }: ProductListProps) {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           {filtered.length === 0 && (
@@ -535,294 +614,348 @@ export function ProductList({ user }: ProductListProps) {
             </div>
             
             <form onSubmit={handleCreateOrUpdate} className="p-8 space-y-6 max-h-[70vh] overflow-y-auto">
-              <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">পণ্যের নাম (English)</label>
-                  <input 
-                    required 
-                    type="text" 
-                    className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 outline-none transition-all font-sans text-sm"
-                    value={formData.name || ""}
-                    onChange={e => setFormData({ ...formData, name: e.target.value })}
+              {/* Toggle for 'অন্যান্য' (Other / Open-price & No-stock) product */}
+              <div className="p-4 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 flex items-center justify-between gap-4">
+                <div>
+                  <p className="font-bold text-sm text-indigo-900 dark:text-indigo-200 font-bengali">
+                    অন্যান্য পণ্য (স্টক ও নির্ধারিত মূল্য ছাড়া)
+                  </p>
+                  <p className="text-xs text-indigo-600 dark:text-indigo-400 font-bengali">
+                    এটি চালু করলে কোনো ডিটেইলস, স্টক বা মূল্য দিতে হবে না। POS-এ বিক্রির সময় ইচ্ছেমতো দাম বসানো যাবে।
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={Boolean(formData.isCustomProduct)}
+                    onChange={e => {
+                      const checked = e.target.checked;
+                      setFormData({
+                        ...formData,
+                        isCustomProduct: checked,
+                        name: checked && !formData.name ? "অন্যান্য" : formData.name,
+                        bnName: checked && !formData.bnName ? "অন্যান্য" : formData.bnName,
+                        sku: checked && !formData.sku ? "OTHER" : formData.sku,
+                        purchasePrice: checked ? 0 : formData.purchasePrice,
+                        salePrice: checked ? 0 : formData.salePrice,
+                        stock: checked ? 0 : formData.stock,
+                        minStock: checked ? 0 : formData.minStock,
+                      });
+                    }}
                   />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">পণ্যের নাম (বাংলা)</label>
-                  <input 
-                    type="text" 
-                    className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bengali text-sm"
-                    value={formData.bnName || ""}
-                    onChange={e => setFormData({ ...formData, bnName: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">SKU / কোড</label>
-                  <input 
-                    required 
-                    type="text" 
-                    className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 outline-none transition-all font-sans text-sm"
-                    value={formData.sku || ""}
-                    onChange={e => setFormData({ ...formData, sku: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">ক্যাটাগরি</label>
-                    <button 
-                      type="button"
-                      onClick={() => setIsAddingCategory(!isAddingCategory)}
-                      className="text-xs font-bold text-primary dark:text-blue-400 hover:underline font-bengali"
-                    >
-                      {isAddingCategory ? "নির্বাচন করুন" : "+ নতুন ক্যাটাগরি"}
-                    </button>
-                  </div>
-                  {isAddingCategory ? (
-                    <div className="flex gap-2">
-                      <input 
-                        type="text" 
-                        placeholder="ক্যাটাগরির নাম লিখুন"
-                        className="flex-1 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-bengali text-sm"
-                        value={newCategoryName}
-                        onChange={e => setNewCategoryName(e.target.value)}
-                      />
-                      <button 
-                        type="button"
-                        onClick={handleAddNewCategory}
-                        className="bg-primary text-white p-1.5 rounded-lg hover:opacity-90"
-                      >
-                        <Plus size={18} />
-                      </button>
-                    </div>
-                  ) : (
-                    <select 
-                      required 
-                      className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-bengali text-sm"
-                      value={formData.categoryId || ""}
-                      onChange={e => setFormData({ ...formData, categoryId: e.target.value })}
-                    >
-                      <option value="" disabled className="dark:bg-slate-900">ক্যাটাগরি নির্বাচন করুন</option>
-                      {categories.map(c => <option key={c.id} value={c.id} className="dark:bg-slate-900">{c.name}</option>)}
-                    </select>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">ইউনিট (Unit)</label>
-                  <select 
-                    className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-bengali text-sm"
-                    value={formData.unit}
-                    onChange={e => setFormData({ ...formData, unit: e.target.value })}
-                  >
-                    <option value="pcs" className="dark:bg-slate-900">পিস (Pcs)</option>
-                    <option value="kg" className="dark:bg-slate-900">কেজি (Kg)</option>
-                    <option value="gm" className="dark:bg-slate-900">গ্রাম (Gm)</option>
-                    <option value="ltr" className="dark:bg-slate-900">লিটার (Ltr)</option>
-                    <option value="ml" className="dark:bg-slate-900">মিলি (Ml)</option>
-                    <option value="pack" className="dark:bg-slate-900">প্যাক (Pack)</option>
-                    <option value="box" className="dark:bg-slate-900">বক্স (Box)</option>
-                    <option value="strip" className="dark:bg-slate-900">পাতা (Strip)</option>
-                    <option value="bottle" className="dark:bg-slate-900">বোতল (Bottle)</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">বারকোড সমূহ (Barcodes)</label>
-                    <button 
-                      type="button" 
-                      onClick={() => setScannerTarget('add')}
-                      className="text-primary dark:text-blue-400 hover:bg-primary/10 dark:hover:bg-blue-400/10 p-1.5 rounded-lg flex items-center gap-1 text-xs"
-                    >
-                      <Scan size={14} /> স্ক্যান
-                    </button>
-                  </div>
+                  <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                </label>
+              </div>
+
+              {formData.isCustomProduct ? (
+                <div className="space-y-4 p-6 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700">
                   <div className="space-y-2">
-                    <div className="flex gap-2">
+                    <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">পণ্যের নাম (ঐচ্ছিক - ডিফল্ট: অন্যান্য)</label>
+                    <input 
+                      type="text" 
+                      placeholder="অন্যান্য"
+                      className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg py-2 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all font-bengali text-sm font-bold"
+                      value={formData.bnName || formData.name || "অন্যান্য"}
+                      onChange={e => setFormData({ ...formData, name: e.target.value, bnName: e.target.value })}
+                    />
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-bengali">
+                    ✓ এই পণ্যের কোনো স্টক বা নির্ধারিত মূল্য থাকবে না। POS থেকে সিলেক্ট করে যেকোনো দাম বসিয়ে বিল করা যাবে।
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">পণ্যের নাম (English)</label>
+                      <input 
+                        required 
+                        type="text" 
+                        className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 outline-none transition-all font-sans text-sm"
+                        value={formData.name || ""}
+                        onChange={e => setFormData({ ...formData, name: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">পণ্যের নাম (বাংলা)</label>
                       <input 
                         type="text" 
-                        placeholder="বারকোড লিখে Enter চাপুন"
-                        className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-sans text-sm"
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            const val = e.currentTarget.value.trim();
-                            if (val && !formData.barcodes?.includes(val)) {
-                              setFormData({ ...formData, barcodes: [...(formData.barcodes || []), val] });
-                              e.currentTarget.value = "";
-                            }
-                          }
-                        }}
+                        className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 outline-none transition-all font-bengali text-sm"
+                        value={formData.bnName || ""}
+                        onChange={e => setFormData({ ...formData, bnName: e.target.value })}
                       />
                     </div>
-                    {formData.barcodes && formData.barcodes.length > 0 && (
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        {formData.barcodes.map(code => (
-                          <span key={code} className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-xs font-mono text-slate-700 dark:text-slate-300">
-                            {code}
-                            <button 
-                              type="button" 
-                              onClick={() => setFormData({ ...formData, barcodes: formData.barcodes?.filter(b => b !== code) })}
-                              className="text-slate-400 hover:text-rose-500"
-                            >
-                              <X size={12} />
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">মিনিমাম স্টক অ্যালার্ট</label>
-                  <input 
-                    type="number" 
-                    className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all text-sm"
-                    value={formData.minStock}
-                    onChange={e => setFormData({ ...formData, minStock: Number(e.target.value) })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">মেয়াদ উত্তীর্ণ তারিখ (অপশনাল)</label>
-                  <input 
-                    type="date" 
-                    className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 outline-none transition-all text-sm"
-                    value={formData.expiryDate || ""}
-                    onChange={e => setFormData({ ...formData, expiryDate: e.target.value })}
-                  />
-                </div>
-                {editingProduct && (
-                  <>
                     <div className="space-y-2">
-                      <label className="text-sm font-bold text-rose-600 dark:text-rose-400 font-bengali">মেয়াদ উত্তীর্ণ পন্য বাদ দিন (Stock Out)</label>
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">SKU / কোড</label>
                       <input 
-                        type="number" 
-                        min="0"
-                        max={formData.stock}
-                        placeholder="পরিমান লিখুন..."
-                        className="w-full bg-rose-50 dark:bg-rose-900/10 border-rose-100 dark:border-rose-900/30 rounded-lg py-1.5 px-3 text-rose-900 dark:text-rose-100 focus:ring-2 focus:ring-rose-500/20 outline-none transition-all font-bold text-sm"
-                        value={formData.expiredQtyToRemove || ""}
-                        onChange={e => setFormData({ ...formData, expiredQtyToRemove: Number(e.target.value) })}
+                        required 
+                        type="text" 
+                        className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 outline-none transition-all font-sans text-sm"
+                        value={formData.sku || ""}
+                        onChange={e => setFormData({ ...formData, sku: e.target.value })}
                       />
-                      <p className="text-[10px] text-rose-500 font-bold font-bengali">এই পরিমান পণ্য বর্তমান স্টক থেকে কমিয়ে দেওয়া হবে</p>
                     </div>
-                    {(formData.barcodes && formData.barcodes.length > 0) && (
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <label className="text-sm font-bold text-rose-600 dark:text-rose-400 font-bengali">মেয়াদ উত্তীর্ণ বারকোড বাদ দিন (অপশনাল)</label>
-                          <button 
-                            type="button" 
-                            onClick={() => setScannerTarget('remove')}
-                            className="text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 p-1.5 rounded-lg flex items-center gap-1 text-xs font-bold"
-                          >
-                            <Scan size={14} /> স্ক্যান
-                          </button>
-                        </div>
-                        <div className="space-y-2">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">ক্যাটাগরি</label>
+                        <button 
+                          type="button"
+                          onClick={() => setIsAddingCategory(!isAddingCategory)}
+                          className="text-xs font-bold text-primary dark:text-blue-400 hover:underline font-bengali"
+                        >
+                          {isAddingCategory ? "নির্বাচন করুন" : "+ নতুন ক্যাটাগরি"}
+                        </button>
+                      </div>
+                      {isAddingCategory ? (
+                        <div className="flex gap-2">
                           <input 
                             type="text" 
-                            placeholder="বারকোড স্ক্যান করুন বা লিখুন (Enter চাপুন)"
-                            className="w-full bg-rose-50 dark:bg-rose-900/10 border-rose-100 dark:border-rose-900/30 rounded-lg py-1.5 px-3 text-rose-900 dark:text-rose-100 focus:ring-2 focus:ring-rose-500/20 transition-all font-sans text-sm placeholder:text-rose-300"
+                            placeholder="ক্যাটাগরির নাম লিখুন"
+                            className="flex-1 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-bengali text-sm"
+                            value={newCategoryName}
+                            onChange={e => setNewCategoryName(e.target.value)}
+                          />
+                          <button 
+                            type="button"
+                            onClick={handleAddNewCategory}
+                            className="bg-primary text-white p-1.5 rounded-lg hover:opacity-90"
+                          >
+                            <Plus size={18} />
+                          </button>
+                        </div>
+                      ) : (
+                        <select 
+                          required 
+                          className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-bengali text-sm"
+                          value={formData.categoryId || ""}
+                          onChange={e => setFormData({ ...formData, categoryId: e.target.value })}
+                        >
+                          <option value="" disabled className="dark:bg-slate-900">ক্যাটাগরি নির্বাচন করুন</option>
+                          {categories.map(c => <option key={c.id} value={c.id} className="dark:bg-slate-900">{c.name}</option>)}
+                        </select>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">ইউনিট (Unit)</label>
+                      <select 
+                        className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-bengali text-sm"
+                        value={formData.unit}
+                        onChange={e => setFormData({ ...formData, unit: e.target.value })}
+                      >
+                        <option value="pcs" className="dark:bg-slate-900">পিস (Pcs)</option>
+                        <option value="kg" className="dark:bg-slate-900">কেজি (Kg)</option>
+                        <option value="gm" className="dark:bg-slate-900">গ্রাম (Gm)</option>
+                        <option value="ltr" className="dark:bg-slate-900">লিটার (Ltr)</option>
+                        <option value="ml" className="dark:bg-slate-900">মিলি (Ml)</option>
+                        <option value="pack" className="dark:bg-slate-900">প্যাক (Pack)</option>
+                        <option value="box" className="dark:bg-slate-900">বক্স (Box)</option>
+                        <option value="strip" className="dark:bg-slate-900">পাতা (Strip)</option>
+                        <option value="bottle" className="dark:bg-slate-900">বোতল (Bottle)</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">বারকোড সমূহ (Barcodes)</label>
+                        <button 
+                          type="button" 
+                          onClick={() => setScannerTarget('add')}
+                          className="text-primary dark:text-blue-400 hover:bg-primary/10 dark:hover:bg-blue-400/10 p-1.5 rounded-lg flex items-center gap-1 text-xs"
+                        >
+                          <Scan size={14} /> স্ক্যান
+                        </button>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex gap-2">
+                          <input 
+                            type="text" 
+                            placeholder="বারকোড লিখে Enter চাপুন"
+                            className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-sans text-sm"
                             onKeyDown={e => {
                               if (e.key === 'Enter') {
                                 e.preventDefault();
                                 const val = e.currentTarget.value.trim();
-                                if (val && formData.barcodes?.includes(val) && !(formData as any).expiredBarcodesToRemove?.includes(val)) {
-                                  setFormData({
-                                    ...formData,
-                                    expiredBarcodesToRemove: [...((formData as any).expiredBarcodesToRemove || []), val],
-                                    expiredQtyToRemove: (formData.expiredQtyToRemove || 0) + 1
-                                  });
+                                if (val && !formData.barcodes?.includes(val)) {
+                                  setFormData({ ...formData, barcodes: [...(formData.barcodes || []), val] });
                                   e.currentTarget.value = "";
-                                } else if (val) {
-                                  showNotify("এই বারকোডটি এই পণ্যের বর্তমান বারকোড তালিকায় নেই", "error");
                                 }
                               }
                             }}
                           />
-                          {((formData as any).expiredBarcodesToRemove || []).length > 0 && (
-                            <div className="flex flex-wrap gap-2 mt-2 p-2 bg-rose-50 dark:bg-rose-900/20 rounded-lg border border-rose-100 dark:border-rose-900/30">
-                              {((formData as any).expiredBarcodesToRemove || []).map((code: string) => (
-                                <span key={code} className="inline-flex items-center gap-1 px-2 py-1 bg-white dark:bg-rose-900 border border-rose-200 dark:border-rose-800 rounded-md text-xs font-mono text-rose-700 dark:text-rose-300">
-                                  {code}
-                                  <button 
-                                    type="button" 
-                                    onClick={() => setFormData({ 
-                                      ...formData, 
-                                      expiredBarcodesToRemove: (formData as any).expiredBarcodesToRemove?.filter((b: string) => b !== code),
-                                      expiredQtyToRemove: Math.max(0, (formData.expiredQtyToRemove || 1) - 1)
-                                    })}
-                                    className="text-rose-400 hover:text-rose-600"
-                                  >
-                                    <X size={12} />
-                                  </button>
-                                </span>
-                              ))}
-                            </div>
-                          )}
                         </div>
+                        {formData.barcodes && formData.barcodes.length > 0 && (
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            {formData.barcodes.map(code => (
+                              <span key={code} className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-xs font-mono text-slate-700 dark:text-slate-300">
+                                {code}
+                                <button 
+                                  type="button" 
+                                  onClick={() => setFormData({ ...formData, barcodes: formData.barcodes?.filter(b => b !== code) })}
+                                  className="text-slate-400 hover:text-rose-500"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">মিনিমাম স্টক অ্যালার্ট</label>
+                      <input 
+                        type="number" 
+                        className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all text-sm"
+                        value={formData.minStock}
+                        onChange={e => setFormData({ ...formData, minStock: Number(e.target.value) })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">মেয়াদ উত্তীর্ণ তারিখ (অপশনাল)</label>
+                      <input 
+                        type="date" 
+                        className="w-full bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 outline-none transition-all text-sm"
+                        value={formData.expiryDate || ""}
+                        onChange={e => setFormData({ ...formData, expiryDate: e.target.value })}
+                      />
+                    </div>
+                    {editingProduct && (
+                      <>
+                        <div className="space-y-2">
+                          <label className="text-sm font-bold text-rose-600 dark:text-rose-400 font-bengali">মেয়াদ উত্তীর্ণ পন্য বাদ দিন (Stock Out)</label>
+                          <input 
+                            type="number" 
+                            min="0"
+                            max={formData.stock}
+                            placeholder="পরিমান লিখুন..."
+                            className="w-full bg-rose-50 dark:bg-rose-900/10 border-rose-100 dark:border-rose-900/30 rounded-lg py-1.5 px-3 text-rose-900 dark:text-rose-100 focus:ring-2 focus:ring-rose-500/20 outline-none transition-all font-bold text-sm"
+                            value={(formData as any).expiredQtyToRemove || ""}
+                            onChange={e => setFormData({ ...formData, expiredQtyToRemove: Number(e.target.value) } as any)}
+                          />
+                          <p className="text-[10px] text-rose-500 font-bold font-bengali">এই পরিমান পণ্য বর্তমান স্টক থেকে কমিয়ে দেওয়া হবে</p>
+                        </div>
+                        {(formData.barcodes && formData.barcodes.length > 0) && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <label className="text-sm font-bold text-rose-600 dark:text-rose-400 font-bengali">মেয়াদ উত্তীর্ণ বারকোড বাদ দিন (অপশনাল)</label>
+                              <button 
+                                type="button" 
+                                onClick={() => setScannerTarget('remove')}
+                                className="text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 p-1.5 rounded-lg flex items-center gap-1 text-xs font-bold"
+                              >
+                                <Scan size={14} /> স্ক্যান
+                              </button>
+                            </div>
+                            <div className="space-y-2">
+                              <input 
+                                type="text" 
+                                placeholder="বারকোড স্ক্যান করুন বা লিখুন (Enter চাপুন)"
+                                className="w-full bg-rose-50 dark:bg-rose-900/10 border-rose-100 dark:border-rose-900/30 rounded-lg py-1.5 px-3 text-rose-900 dark:text-rose-100 focus:ring-2 focus:ring-rose-500/20 transition-all font-sans text-sm placeholder:text-rose-300"
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    const val = e.currentTarget.value.trim();
+                                    if (val && formData.barcodes?.includes(val) && !(formData as any).expiredBarcodesToRemove?.includes(val)) {
+                                      setFormData({
+                                        ...formData,
+                                        expiredBarcodesToRemove: [...((formData as any).expiredBarcodesToRemove || []), val],
+                                        expiredQtyToRemove: ((formData as any).expiredQtyToRemove || 0) + 1
+                                      } as any);
+                                      e.currentTarget.value = "";
+                                    } else if (val) {
+                                      showNotify("এই বারকোডটি এই পণ্যের বর্তমান বারকোড তালিকায় নেই", "error");
+                                    }
+                                  }
+                                }}
+                              />
+                              {((formData as any).expiredBarcodesToRemove || []).length > 0 && (
+                                <div className="flex flex-wrap gap-2 mt-2 p-2 bg-rose-50 dark:bg-rose-900/20 rounded-lg border border-rose-100 dark:border-rose-900/30">
+                                  {((formData as any).expiredBarcodesToRemove || []).map((code: string) => (
+                                    <span key={code} className="inline-flex items-center gap-1 px-2 py-1 bg-white dark:bg-rose-900 border border-rose-200 dark:border-rose-800 rounded-md text-xs font-mono text-rose-700 dark:text-rose-300">
+                                      {code}
+                                      <button 
+                                        type="button" 
+                                        onClick={() => setFormData({ 
+                                          ...formData, 
+                                          expiredBarcodesToRemove: (formData as any).expiredBarcodesToRemove?.filter((b: string) => b !== code),
+                                          expiredQtyToRemove: Math.max(0, ((formData as any).expiredQtyToRemove || 1) - 1)
+                                        } as any)}
+                                        className="text-rose-400 hover:text-rose-600"
+                                      >
+                                        <X size={12} />
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
-                  </>
-                )}
-              </div>
+                  </div>
 
-              <div className="p-6 bg-slate-50 dark:bg-slate-800/50 rounded-2xl grid grid-cols-3 gap-6 transition-colors">
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">ক্রয় মূল্য</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">৳</span>
-                    <input 
-                      required 
-                      type="text" 
-                      inputMode="decimal"
-                      className="w-full bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 pl-7 pr-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-sans text-sm"
-                      value={formData.purchasePrice ?? ""}
-                      onChange={e => {
-                        const val = e.target.value;
-                        if (val === "" || /^\d*\.?\d*$/.test(val)) {
-                          setFormData({ ...formData, purchasePrice: val as any });
-                        }
-                      }}
-                      onBlur={() => setFormData({ ...formData, purchasePrice: Number(formData.purchasePrice || 0) })}
-                    />
+                  <div className="p-6 bg-slate-50 dark:bg-slate-800/50 rounded-2xl grid grid-cols-3 gap-6 transition-colors">
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">ক্রয় মূল্য</label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">৳</span>
+                        <input 
+                          required 
+                          type="text" 
+                          inputMode="decimal"
+                          className="w-full bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 pl-7 pr-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-sans text-sm"
+                          value={formData.purchasePrice ?? ""}
+                          onChange={e => {
+                            const val = e.target.value;
+                            if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                              setFormData({ ...formData, purchasePrice: val as any });
+                            }
+                          }}
+                          onBlur={() => setFormData({ ...formData, purchasePrice: Number(formData.purchasePrice || 0) })}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">বিক্রয় মূল্য</label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">৳</span>
+                        <input 
+                          required 
+                          type="text" 
+                          inputMode="decimal"
+                          className="w-full bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 pl-7 pr-2 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-sans font-bold text-primary dark:text-blue-400 text-sm"
+                          value={formData.salePrice ?? ""}
+                          onChange={e => {
+                            const val = e.target.value;
+                            if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                              setFormData({ ...formData, salePrice: val as any });
+                            }
+                          }}
+                          onBlur={() => setFormData({ ...formData, salePrice: Number(formData.salePrice || 0) })}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">ওপেনিং স্টক</label>
+                      <input 
+                        required 
+                        type="text" 
+                        inputMode="decimal"
+                        className="w-full bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-sans text-sm"
+                        value={formData.stock ?? ""}
+                        onChange={e => {
+                          const val = e.target.value;
+                          if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                            setFormData({ ...formData, stock: val as any });
+                          }
+                        }}
+                        onBlur={() => setFormData({ ...formData, stock: Number(formData.stock || 0) })}
+                      />
+                    </div>
                   </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">বিক্রয় মূল্য</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">৳</span>
-                    <input 
-                      required 
-                      type="text" 
-                      inputMode="decimal"
-                      className="w-full bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 pl-7 pr-2 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-sans font-bold text-primary dark:text-blue-400 text-sm"
-                      value={formData.salePrice ?? ""}
-                      onChange={e => {
-                        const val = e.target.value;
-                        if (val === "" || /^\d*\.?\d*$/.test(val)) {
-                          setFormData({ ...formData, salePrice: val as any });
-                        }
-                      }}
-                      onBlur={() => setFormData({ ...formData, salePrice: Number(formData.salePrice || 0) })}
-                    />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-bold text-slate-700 dark:text-slate-300 font-bengali">ওপেনিং স্টক</label>
-                  <input 
-                    required 
-                    type="text" 
-                    inputMode="decimal"
-                    className="w-full bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-lg py-1.5 px-3 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary/20 transition-all font-sans text-sm"
-                    value={formData.stock ?? ""}
-                    onChange={e => {
-                      const val = e.target.value;
-                      if (val === "" || /^\d*\.?\d*$/.test(val)) {
-                        setFormData({ ...formData, stock: val as any });
-                      }
-                    }}
-                    onBlur={() => setFormData({ ...formData, stock: Number(formData.stock || 0) })}
-                  />
-                </div>
-              </div>
+                </>
+              )}
 
               <div className="flex justify-end gap-4 sticky bottom-0 bg-white dark:bg-slate-900 pt-4 pb-0 transition-colors">
                 <button 

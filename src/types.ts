@@ -84,6 +84,7 @@ export interface Product {
   minStock: number;
   expiryDate?: string;
   image?: string;
+  isCustomProduct?: boolean;
   createdAt?: string;
 }
 
@@ -181,6 +182,7 @@ export interface SaleItem {
   scannedBarcodes?: string[];
   warrantyType?: 'none' | 'guarantee' | 'warranty';
   warrantyDuration?: string;
+  isCustomProduct?: boolean;
   subtotal: number;
 }
 
@@ -214,6 +216,7 @@ export interface DashboardStats {
   monthlySales: number;
   totalProfit: number;
   totalDue: number;
+  totalCustomerAdvance?: number;
   totalExpense: number;
   totalProducts: number;
   lowStockCount: number;

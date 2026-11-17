@@ -92,7 +92,14 @@ export function SalesList({ user }: SalesListProps) {
     const totalAmount = filtered.reduce((acc, sale) => acc + (Number(sale.totalAmount) || 0), 0);
     const totalPayable = filtered.reduce((acc, sale) => acc + (Number(sale.payableAmount) || 0), 0);
     const totalPaid = filtered.reduce((acc, sale) => acc + (Number(sale.paidAmount) || 0), 0);
-    const totalDue = filtered.reduce((acc, sale) => acc + (Number(sale.dueAmount) || 0), 0);
+    const totalDue = filtered.reduce((acc, sale) => {
+      const d = Number(sale.dueAmount) || 0;
+      return d > 0 ? acc + d : acc;
+    }, 0);
+    const totalAdvance = filtered.reduce((acc, sale) => {
+      const d = Number(sale.dueAmount) || 0;
+      return d < 0 ? acc + Math.abs(d) : acc;
+    }, 0);
 
     const data = [
       { label: "মোট চালানের সংখ্যা", value: `${filtered.length} টি` },
@@ -100,6 +107,7 @@ export function SalesList({ user }: SalesListProps) {
       { label: "ভ্যাট সহ মোট দেয়", value: `৳ ${totalPayable}` },
       { label: "মোট সংগৃহীত টাকা", value: `৳ ${totalPaid}` },
       { label: "মোট বকেয়া", value: `৳ ${totalDue}` },
+      ...(totalAdvance > 0 ? [{ label: "মোট ক্রেতা পাবে (অতিরিক্ত জমা)", value: `৳ ${totalAdvance}` }] : []),
     ];
 
     showNotify("রিপোর্ট প্রিন্ট লেআউট তৈরি হচ্ছে...");
@@ -190,10 +198,17 @@ export function SalesList({ user }: SalesListProps) {
                   <td className="px-6 py-4">
                     <p className="font-bold text-emerald-600 dark:text-emerald-500">৳ {sale.paidAmount}</p>
                     {sale.dueAmount > 0 && <p className="text-[10px] text-rose-500 font-bold">Due: ৳ {sale.dueAmount}</p>}
+                    {sale.dueAmount < 0 && <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold font-bengali">ক্রেতা পাবে: ৳ {Math.abs(sale.dueAmount)}</p>}
                   </td>
                   <td className="px-6 py-4">
-                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${sale.dueAmount === 0 ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-500' : 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-500'}`}>
-                      {sale.dueAmount === 0 ? 'PAID' : 'DUE'}
+                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider font-bengali ${
+                      sale.dueAmount < 0
+                        ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        : sale.dueAmount === 0
+                          ? 'bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                          : 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-500'
+                    }`}>
+                      {sale.dueAmount < 0 ? 'ক্রেতা পাবে' : sale.dueAmount === 0 ? 'PAID' : 'DUE'}
                     </span>
                   </td>
                   <td className="px-6 py-4 text-right">
@@ -317,6 +332,12 @@ export function SalesList({ user }: SalesListProps) {
                   <div className="flex justify-between items-center text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 px-3 py-1 rounded-lg">
                     <span className="font-bold font-bengali">বকেয়া:</span>
                     <span className="font-bold font-sans">৳ {selectedSale.dueAmount}</span>
+                  </div>
+                )}
+                {selectedSale.dueAmount < 0 && (
+                  <div className="flex justify-between items-center text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 px-3 py-1 rounded-lg">
+                    <span className="font-bold font-bengali">ক্রেতা পাবে (অতিরিক্ত জমা):</span>
+                    <span className="font-bold font-sans">৳ {Math.abs(selectedSale.dueAmount)}</span>
                   </div>
                 )}
               </div>

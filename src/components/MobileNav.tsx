@@ -44,7 +44,7 @@ export function MobileNav({ activeTab, setActiveTab, user }: MobileNavProps) {
   const filteredItems = navItems.filter(item => {
     if (!user) return false;
     if (user.role === 'admin') return true;
-    if (item.id === 'approvals') return false; // Strictly admin only
+    if (item.id === 'approvals' || item.id === 'settings') return false; // Strictly admin only
     return user.permissions?.includes(item.id);
   });
 

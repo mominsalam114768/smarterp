@@ -51,58 +51,80 @@ export function generateExcelWorkbook(data: any): Blob {
 
   // 3. Customers Sheet
   if (data.customers && Array.isArray(data.customers)) {
-    const customersData = data.customers.map((c: any) => ({
-      "Customer ID": c.id || "",
-      "Name": c.name || "",
-      "Phone": c.phone || "",
-      "Address": c.address || "",
-      "Due Amount (বকেয়া)": c.dueAmount ?? 0,
-      "Total Spent (মোট ক্রয়)": c.totalSpent ?? 0
-    }));
+    const customersData = data.customers.map((c: any) => {
+      const bal = Number(c.dueAmount) || 0;
+      return {
+        "Customer ID": c.id || "",
+        "Name": c.name || "",
+        "Phone": c.phone || "",
+        "Address": c.address || "",
+        "Due Amount (বকেয়া)": bal > 0 ? bal : 0,
+        "Customer Advance (ক্রেতা পাবে)": bal < 0 ? Math.abs(bal) : 0,
+        "Net Balance": bal,
+        "Balance Status": bal < 0 ? "ক্রেতা পাবে (অ্যাডভান্স)" : bal > 0 ? "বকেয়া রয়েছে" : "পরিশোধিত",
+        "Total Spent (মোট ক্রয়)": c.totalSpent ?? 0
+      };
+    });
     const wsCustomers = XLSX.utils.json_to_sheet(customersData.length ? customersData : [{ Message: "কোনো গ্রাহক নেই" }]);
     XLSX.utils.book_append_sheet(wb, wsCustomers, "গ্রাহক (Customers)");
   }
 
-  // 4. Dedicated Due Management Sheet: বকেয়া গ্রাহক তালিকা (Customer Dues)
-  const dueCustomers = (data.customers && Array.isArray(data.customers))
+  // 4. Dedicated Due & Advance Management Sheet: বকেয়া ও ক্রেতা পাবে তালিকা
+  const activeBalanceCustomers = (data.customers && Array.isArray(data.customers))
     ? data.customers
-        .filter((c: any) => (Number(c.dueAmount) || 0) > 0)
-        .sort((a: any, b: any) => (Number(b.dueAmount) || 0) - (Number(a.dueAmount) || 0))
+        .filter((c: any) => (Number(c.dueAmount) || 0) !== 0)
+        .sort((a: any, b: any) => Math.abs(Number(b.dueAmount) || 0) - Math.abs(Number(a.dueAmount) || 0))
     : [];
 
-  const dueCustomersData = dueCustomers.map((c: any, index: number) => ({
-    "ক্রমিক নং": index + 1,
-    "গ্রাহকের নাম": c.name || "",
-    "মোবাইল নম্বর": c.phone || "",
-    "ঠিকানা": c.address || "",
-    "বর্তমান বকেয়া (৳)": Number(c.dueAmount) || 0,
-    "মোট ক্রয় (৳)": Number(c.totalSpent) || 0,
-    "বকেয়ার অবস্থা": "বকেয়া রয়েছে"
-  }));
+  const dueCustomers = (data.customers && Array.isArray(data.customers))
+    ? data.customers.filter((c: any) => (Number(c.dueAmount) || 0) > 0)
+    : [];
+
+  const advanceCustomers = (data.customers && Array.isArray(data.customers))
+    ? data.customers.filter((c: any) => (Number(c.dueAmount) || 0) < 0)
+    : [];
+
+  const dueCustomersData = activeBalanceCustomers.map((c: any, index: number) => {
+    const bal = Number(c.dueAmount) || 0;
+    return {
+      "ক্রমিক নং": index + 1,
+      "গ্রাহকের নাম": c.name || "",
+      "মোবাইল নম্বর": c.phone || "",
+      "ঠিকানা": c.address || "",
+      "বকেয়া টাকা (৳)": bal > 0 ? bal : 0,
+      "ক্রেতা পাবে / অ্যাডভান্স (৳)": bal < 0 ? Math.abs(bal) : 0,
+      "মোট ক্রয় (৳)": Number(c.totalSpent) || 0,
+      "হিসাবের অবস্থা": bal < 0 ? "ক্রেতা পাবে (অ্যাডভান্স জমা)" : "বকেয়া রয়েছে"
+    };
+  });
 
   const wsDueCustomers = XLSX.utils.json_to_sheet(
-    dueCustomersData.length ? dueCustomersData : [{ "বার্তা": "আলহামদুলিল্লাহ, কোনো গ্রাহকের বকেয়া নেই।" }]
+    dueCustomersData.length ? dueCustomersData : [{ "বার্তা": "আলহামদুলিল্লাহ, কোনো গ্রাহকের বকেয়া বা অ্যাডভান্স নেই।" }]
   );
-  XLSX.utils.book_append_sheet(wb, wsDueCustomers, "বকেয়া হিসাব (Due List)");
+  XLSX.utils.book_append_sheet(wb, wsDueCustomers, "বকেয়া ও ক্রেতা পাবে (Due List)");
 
   // 5. Dedicated Due Invoices Sheet: বাকি বিক্রি চালান (Credit Sales)
   const dueSales = (data.sales && Array.isArray(data.sales))
     ? data.sales
-        .filter((s: any) => (Number(s.dueAmount) || 0) > 0)
+        .filter((s: any) => (Number(s.dueAmount) || 0) !== 0)
         .sort((a: any, b: any) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
     : [];
 
-  const dueSalesData = dueSales.map((s: any, index: number) => ({
-    "ক্রমিক নং": index + 1,
-    "ইনভয়েস নং": s.invoiceNo || s.id || "",
-    "তারিখ ও সময় (ঢাকা সময়)": s.createdAt ? formatDhakaDateTime(s.createdAt) : "",
-    "গ্রাহকের নাম": s.customerName || "",
-    "মোবাইল নম্বর": s.customerPhone || "",
-    "মোট বিল (৳)": s.payableAmount ?? s.totalAmount ?? 0,
-    "পরিশোধিত জমা (৳)": s.paidAmount ?? 0,
-    "বাকি টাকা (৳)": s.dueAmount ?? 0,
-    "পেমেন্ট অবস্থা": (Number(s.paidAmount) || 0) > 0 ? "আংশিক বাকি" : "সম্পূর্ণ বাকি"
-  }));
+  const dueSalesData = dueSales.map((s: any, index: number) => {
+    const due = Number(s.dueAmount) || 0;
+    return {
+      "ক্রমিক নং": index + 1,
+      "ইনভয়েস নং": s.invoiceNo || s.id || "",
+      "তারিখ ও সময় (ঢাকা সময়)": s.createdAt ? formatDhakaDateTime(s.createdAt) : "",
+      "গ্রাহকের নাম": s.customerName || "",
+      "মোবাইল নম্বর": s.customerPhone || "",
+      "মোট বিল (৳)": s.payableAmount ?? s.totalAmount ?? 0,
+      "পরিশোধিত জমা (৳)": s.paidAmount ?? 0,
+      "বাকি টাকা (৳)": due > 0 ? due : 0,
+      "ক্রেতা পাবে (৳)": due < 0 ? Math.abs(due) : 0,
+      "পেমেন্ট অবস্থা": due < 0 ? "ক্রেতা পাবে (অতিরিক্ত জমা)" : (Number(s.paidAmount) || 0) > 0 ? "আংশিক বাকি" : "সম্পূর্ণ বাকি"
+    };
+  });
 
   const wsDueSales = XLSX.utils.json_to_sheet(
     dueSalesData.length ? dueSalesData : [{ "বার্তা": "কোনো বাকি বিক্রির চালান নেই।" }]
@@ -136,9 +158,10 @@ export function generateExcelWorkbook(data: any): Blob {
     XLSX.utils.book_append_sheet(wb, wsSuppliers, "সরবরাহকারী (Suppliers)");
   }
 
-  // 8. Summary Sheet (with comprehensive Due statistics)
+  // 8. Summary Sheet (with comprehensive Due & Advance statistics)
   const totalCustomerDue = dueCustomers.reduce((sum: number, c: any) => sum + (Number(c.dueAmount) || 0), 0);
-  const totalSalesDue = dueSales.reduce((sum: number, s: any) => sum + (Number(s.dueAmount) || 0), 0);
+  const totalCustomerAdvance = advanceCustomers.reduce((sum: number, c: any) => sum + Math.abs(Number(c.dueAmount) || 0), 0);
+  const totalSalesDue = dueSales.filter((s: any) => (Number(s.dueAmount) || 0) > 0).reduce((sum: number, s: any) => sum + (Number(s.dueAmount) || 0), 0);
   const totalSupplierDue = (data.suppliers && Array.isArray(data.suppliers))
     ? data.suppliers.reduce((sum: number, sup: any) => sum + (Number(sup.dueAmount) || 0), 0)
     : 0;
@@ -150,11 +173,11 @@ export function generateExcelWorkbook(data: any): Blob {
     { "বিষয়": "কারেন্সি", "তথ্য": data.business?.currency || "BDT" },
     { "বিষয়": "রিপোর্টের তারিখ ও সময় (ঢাকা সময়)", "তথ্য": formatDhakaDateTime(new Date()) },
     { "বিষয়": "--------------------", "তথ্য": "--------------------" },
-    { "বিষয়": "মোট গ্রাহক বকেয়া (পাওনা টাকা)", "তথ্য": `৳ ${totalCustomerDue.toLocaleString('bn-BD')}` },
-    { "বিষয়": "বকেয়া ওয়ালা গ্রাহকের সংখ্যা", "তথ্য": `${dueCustomers.length} জন` },
-    { "বিষয়": "মোট বাকি বিক্রির চালান (মেমো)", "তথ্য": `${dueSales.length} টি (৳ ${totalSalesDue.toLocaleString('bn-BD')})` },
+    { "বিষয়": "মোট গ্রাহক বকেয়া (পাওনা টাকা)", "তথ্য": `৳ ${totalCustomerDue.toLocaleString('bn-BD')} (${dueCustomers.length} জন)` },
+    { "বিষয়": "মোট ক্রেতা পাবে (অতিরিক্ত/অ্যাডভান্স জমা)", "তথ্য": `৳ ${totalCustomerAdvance.toLocaleString('bn-BD')} (${advanceCustomers.length} জন)` },
+    { "বিষয়": "মোট বাকি বিক্রির চালান (মেমো)", "তথ্য": `${dueSales.filter((s: any) => (Number(s.dueAmount) || 0) > 0).length} টি (৳ ${totalSalesDue.toLocaleString('bn-BD')})` },
     { "বিষয়": "সরবরাহকারীর কাছে দেনা (সাপ্লায়ার বকেয়া)", "তথ্য": `৳ ${totalSupplierDue.toLocaleString('bn-BD')}` },
-    { "বিষয়": "নীট পাওনা / উদ্বৃত্ত", "তথ্য": `৳ ${(totalCustomerDue - totalSupplierDue).toLocaleString('bn-BD')}` },
+    { "বিষয়": "নীট পাওনা / উদ্বৃত্ত", "তথ্য": `৳ ${(totalCustomerDue - totalCustomerAdvance - totalSupplierDue).toLocaleString('bn-BD')}` },
     { "বিষয়": "--------------------", "তথ্য": "--------------------" },
     { "বিষয়": "মোট পণ্য সংখ্যা", "তথ্য": data.products?.length || 0 },
     { "বিষয়": "মোট বিক্রি সংখ্যা", "তথ্য": data.sales?.length || 0 },

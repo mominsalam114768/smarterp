@@ -36,7 +36,12 @@ import {
   AlertCircle,
   HelpCircle,
   Layers,
-  Sparkles
+  Sparkles,
+  Building2,
+  Plus,
+  ArrowRightLeft,
+  Eye,
+  EyeOff
 } from "lucide-react";
 import { motion } from "motion/react";
 import CryptoJS from "crypto-js";
@@ -57,6 +62,7 @@ import {
   testGoogleSheetsConnection, 
   syncAllToGoogleSheets, 
   fetchDataFromGoogleSheets,
+  findMasterWebAppUrl,
   GoogleSheetsConfig
 } from "../lib/sheetsSync";
 import { GOOGLE_APPS_SCRIPT_CODE } from "../lib/gasScriptCode";
@@ -77,15 +83,43 @@ const defaultBusiness: Business = {
   }
 };
 
-export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business) => void }) {
+export function Settings({ 
+  onBusinessUpdate,
+  onShopSwitch
+}: { 
+  onBusinessUpdate?: (b: Business) => void;
+  onShopSwitch?: (b: Business) => void;
+}) {
   const [business, setBusiness] = useState<Business>(defaultBusiness);
+  const [shopsList, setShopsList] = useState<Business[]>([]);
+  const [shopSheetStatuses, setShopSheetStatuses] = useState<Record<string, GoogleSheetsConfig>>({});
+  const [switchingShopId, setSwitchingShopId] = useState<string | null>(null);
+  const [showAddShopModal, setShowAddShopModal] = useState(false);
+  const [creatingShop, setCreatingShop] = useState(false);
+  const [switchImmediately, setSwitchImmediately] = useState(true);
+  const [newShopForm, setNewShopForm] = useState({
+    name: "",
+    phone: "",
+    address: "ঢাকা, বাংলাদেশ",
+    currency: "BDT",
+    webAppUrl: "",
+    sheetUrl: ""
+  });
+
+  // Shop Deletion Admin Verification Modal States
+  const [shopToDelete, setShopToDelete] = useState<Business | null>(null);
+  const [deleteAuthForm, setDeleteAuthForm] = useState({ email: "", password: "" });
+  const [showDeletePass, setShowDeletePass] = useState(false);
+  const [deletingShop, setDeletingShop] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeSubTab, setActiveSubTab] = useState<'profile' | 'sheets' | 'printer' | 'backup'>('profile');
+  const [activeSubTab, setActiveSubTab] = useState<'shops' | 'profile' | 'sheets' | 'printer' | 'backup'>('shops');
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error' | 'info'} | null>(null);
   
-  // Google Sheets Master Database States
+  // Google Sheets Master Database States (Isolated per Shop)
   const [sheetsConfig, setSheetsConfig] = useState<GoogleSheetsConfig>(getLocalSheetsConfig());
   const [testingSheets, setTestingSheets] = useState(false);
   const [syncingSheets, setSyncingSheets] = useState(false);
@@ -150,51 +184,228 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
     };
   }, []);
 
-  useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        const [bizData, users, backupStatus] = await Promise.all([
-          api.getBusiness(),
-          api.getUsers(),
-          api.getBackupStatus()
-        ]);
-        if (bizData) {
-          setBusiness(prev => ({
-            ...prev,
-            ...bizData,
-            smtpConfig: {
-              ...(prev.smtpConfig || {}),
-              ...(bizData.smtpConfig || {})
-            }
-          }));
-          if (bizData.defaultPrinter) {
-            setSelectedPrinter(bizData.defaultPrinter);
+  const loadAllShopsAndConfig = async () => {
+    setLoading(true);
+    try {
+      const [bizData, allShops, users, backupStatus] = await Promise.all([
+        api.getBusiness(),
+        api.getBusinesses(),
+        api.getUsers(),
+        api.getBackupStatus()
+      ]);
+      const activeShopId = bizData?.id || "main-business";
+      if (bizData) {
+        setBusiness(prev => ({
+          ...prev,
+          ...bizData,
+          smtpConfig: {
+            ...(prev.smtpConfig || {}),
+            ...(bizData.smtpConfig || {})
           }
+        }));
+        if (bizData.defaultPrinter) {
+          setSelectedPrinter(bizData.defaultPrinter);
         }
-        setLastBackupAt(backupStatus.lastBackupAt);
-        // Find current admin or logged in user
-        const admin = users.find(u => u.role === 'admin');
-        if (admin) setCurrentUser(admin);
+      }
+      setShopsList(allShops);
+      setLastBackupAt(backupStatus.lastBackupAt || null);
 
-        // Load Google Sheets config from Cloud / Local
-        fetchCloudSheetsConfig().then(cfg => {
-          if (cfg && cfg.webAppUrl) {
-            setSheetsConfig(cfg);
+      const admin = users.find(u => u.role === 'admin');
+      if (admin) setCurrentUser(admin);
+
+      // Load Google Sheets config specifically for the active shop
+      const localCfg = getLocalSheetsConfig(activeShopId);
+      setSheetsConfig(localCfg);
+      fetchCloudSheetsConfig(activeShopId).then(cfg => {
+        if (cfg) {
+          setSheetsConfig(cfg);
+          setShopSheetStatuses(prev => ({ ...prev, [activeShopId]: cfg }));
+        }
+      });
+
+      // Load permanently bound Google Sheets status for all shops
+      const statusMap: Record<string, GoogleSheetsConfig> = {};
+      for (const s of allShops) {
+        statusMap[s.id] = getLocalSheetsConfig(s.id);
+      }
+      setShopSheetStatuses(statusMap);
+      Promise.all(
+        allShops.map(async (s) => {
+          try {
+            const c = await fetchCloudSheetsConfig(s.id);
+            return { id: s.id, cfg: c };
+          } catch {
+            return { id: s.id, cfg: getLocalSheetsConfig(s.id) };
+          }
+        })
+      ).then(results => {
+        const nextMap: Record<string, GoogleSheetsConfig> = {};
+        results.forEach(r => {
+          nextMap[r.id] = r.cfg;
+          if (r.id === activeShopId && r.cfg) {
+            setSheetsConfig(r.cfg);
           }
         });
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadData();
+        setShopSheetStatuses(nextMap);
+      });
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAllShopsAndConfig();
   }, []);
 
   const showNotify = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 3500);
+  };
+
+  const handleSwitchShop = async (targetShop: Business) => {
+    if (targetShop.id === business.id) {
+      showNotify(`আপনি ইতিমধ্যে "${targetShop.name}" শপে আছেন`, "info");
+      return;
+    }
+    setSwitchingShopId(targetShop.id);
+    try {
+      showNotify(`"${targetShop.name}" শপে প্রবেশ করা হচ্ছে...`, "info");
+      const switchedBiz = await api.switchBusiness(targetShop.id);
+      setBusiness(switchedBiz);
+      if (switchedBiz.defaultPrinter) {
+        setSelectedPrinter(switchedBiz.defaultPrinter);
+      }
+      const shopCfg = await fetchCloudSheetsConfig(switchedBiz.id);
+      setSheetsConfig(shopCfg);
+      setShopSheetStatuses(prev => ({ ...prev, [switchedBiz.id]: shopCfg }));
+      if (onBusinessUpdate) onBusinessUpdate(switchedBiz);
+      if (onShopSwitch) onShopSwitch(switchedBiz);
+      showNotify(`সফলভাবে "${switchedBiz.name}" শপে পরিবর্তন করা হয়েছে! এখন এই শপের সকল ডাটা ও গুগল শিট সক্রিয়।`, "success");
+    } catch (err: any) {
+      showNotify(err.message || "শপ পরিবর্তন করতে সমস্যা হয়েছে", "error");
+    } finally {
+      setSwitchingShopId(null);
+    }
+  };
+
+  const handleCreateNewShop = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!newShopForm.name.trim()) {
+      showNotify("অনুগ্রহ করে নতুন শপের নাম লিখুন", "error");
+      return;
+    }
+    setCreatingShop(true);
+    try {
+      showNotify(`"${newShopForm.name.trim()}" শপ এবং নতুন গুগল শিট স্বয়ংক্রিয়ভাবে তৈরি হচ্ছে...`, "info");
+
+      // Ensure either Master Web App URL or Google Drive token is available so a real Google Sheet is auto-created
+      const masterUrl = newShopForm.webAppUrl.trim() || (await findMasterWebAppUrl());
+      if (!masterUrl && !getDriveAccessToken()) {
+        try {
+          const driveAuth = await googleDriveSignIn();
+          if (driveAuth?.user) {
+            setDriveUser(driveAuth.user);
+          }
+        } catch {
+          // Continue even if popup was skipped; Master Web App URL may still be configured later
+        }
+      }
+
+      const createdShop = await api.createBusiness({
+        name: newShopForm.name.trim(),
+        phone: newShopForm.phone.trim(),
+        address: newShopForm.address.trim() || "ঢাকা, বাংলাদেশ",
+        currency: newShopForm.currency || "BDT",
+        webAppUrl: masterUrl,
+        sheetUrl: newShopForm.sheetUrl.trim()
+      });
+
+      const updatedShops = await api.getBusinesses();
+      setShopsList(updatedShops);
+      const createdCfg = await fetchCloudSheetsConfig(createdShop.id);
+      setShopSheetStatuses(prev => ({ ...prev, [createdShop.id]: createdCfg }));
+
+      setShowAddShopModal(false);
+      setNewShopForm({
+        name: "",
+        phone: "",
+        address: "ঢাকা, বাংলাদেশ",
+        currency: "BDT",
+        webAppUrl: "",
+        sheetUrl: ""
+      });
+
+      if (switchImmediately) {
+        await handleSwitchShop(createdShop);
+        showNotify(`নতুন শপ "${createdShop.name}" এবং এর গুগল শিট (${createdShop.name} - হিসাবপাতি ডাটাবেজ) স্বয়ংক্রিয়ভাবে তৈরি ও যুক্ত হয়েছে!`, "success");
+      } else {
+        showNotify(
+          `নতুন শপ "${createdShop.name}" এবং এর গুগল শিট (${createdShop.name} - হিসাবপাতি ডাটাবেজ) স্বয়ংক্রিয়ভাবে তৈরি ও যুক্ত হয়েছে!`,
+          "success"
+        );
+      }
+    } catch (err: any) {
+      showNotify(err.message || "নতুন শপ তৈরি করতে সমস্যা হয়েছে", "error");
+    } finally {
+      setCreatingShop(false);
+    }
+  };
+
+  const handleDeleteShop = (targetShop: Business) => {
+    if (targetShop.id === "main-business") {
+      showNotify("মেইন শপ (ডিফল্ট শপ) মুছে ফেলা যাবে না", "error");
+      return;
+    }
+    setShopToDelete(targetShop);
+    setDeleteAuthForm({ email: "", password: "" });
+    setDeleteError("");
+    setShowDeletePass(false);
+  };
+
+  const handleConfirmDeleteShop = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!shopToDelete) return;
+    if (!deleteAuthForm.email.trim() || !deleteAuthForm.password.trim()) {
+      setDeleteError("অনুগ্রহ করে অ্যাডমিনের ইমেইল এবং পাসওয়ার্ড লিখুন।");
+      return;
+    }
+
+    setDeletingShop(true);
+    setDeleteError("");
+    try {
+      const targetName = shopToDelete.name;
+      const targetId = shopToDelete.id;
+      const res = await api.deleteBusiness(targetId, {
+        email: deleteAuthForm.email.trim(),
+        password: deleteAuthForm.password.trim()
+      });
+
+      const updatedShops = await api.getBusinesses();
+      setShopsList(updatedShops);
+      setShopSheetStatuses(prev => {
+        const next = { ...prev };
+        delete next[targetId];
+        return next;
+      });
+
+      if (res.switchedToShop) {
+        setBusiness(res.switchedToShop);
+        const mainCfg = await fetchCloudSheetsConfig(res.switchedToShop.id);
+        setSheetsConfig(mainCfg);
+        if (onBusinessUpdate) onBusinessUpdate(res.switchedToShop);
+        if (onShopSwitch) onShopSwitch(res.switchedToShop);
+      }
+
+      setShopToDelete(null);
+      setDeleteAuthForm({ email: "", password: "" });
+      showNotify(`অ্যাডমিন যাচাইকরণ সফল! "${targetName}" শপ এবং এর গুগল শিট স্বয়ংক্রিয়ভাবে ডিলিট করা হয়েছে।`, "success");
+    } catch (err: any) {
+      setDeleteError(err.message || "অ্যাডমিনের ইমেইল বা পাসওয়ার্ড সঠিক নয় অথবা ডিলিট করতে সমস্যা হয়েছে।");
+    } finally {
+      setDeletingShop(false);
+    }
   };
 
   const handleTestSheets = async () => {
@@ -224,9 +435,10 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
   const handleSaveSheets = async () => {
     setSavingSheets(true);
     try {
-      const saved = await saveSheetsConfig(sheetsConfig);
+      const saved = await saveSheetsConfig(sheetsConfig, business.id);
       setSheetsConfig(saved);
-      showNotify("গুগল শিট ডাটাবেজ কনফিগারেশন সফলভাবে সংরক্ষিত হয়েছে!", "success");
+      setShopSheetStatuses(prev => ({ ...prev, [business.id]: saved }));
+      showNotify(`"${business.name}" শপের গুগল শিট কনফিগারেশন সংরক্ষিত হয়েছে!`, "success");
     } catch (e: any) {
       showNotify("কনফিগারেশন সংরক্ষণে সমস্যা হয়েছে", "error");
     } finally {
@@ -241,11 +453,12 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
     }
     setSyncingSheets(true);
     try {
-      showNotify("অ্যাপের সমস্ত তথ্য সংগ্রহ করে গুগল শিটে পাঠানো হচ্ছে...", "info");
+      showNotify(`"${business.name}" শপের সমস্ত তথ্য গুগল শিটে পাঠানো হচ্ছে...`, "info");
       const allData = await api.getAllData();
-      const res = await syncAllToGoogleSheets(allData, sheetsConfig.webAppUrl);
-      const updated = getLocalSheetsConfig();
+      const res = await syncAllToGoogleSheets(allData, sheetsConfig.webAppUrl, business.id);
+      const updated = getLocalSheetsConfig(business.id);
       setSheetsConfig(updated);
+      setShopSheetStatuses(prev => ({ ...prev, [business.id]: updated }));
       showNotify(res.message || "গুগল শিটের প্রতিটি ট্যাবে সমস্ত তথ্য সফলভাবে আপডেট হয়েছে!", "success");
     } catch (e: any) {
       console.error("Sync all sheets error:", e);
@@ -260,13 +473,13 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
       showNotify("প্রথমে গুগল অ্যাপস স্ক্রিপ্ট Web App URL সেট করুন", "error");
       return;
     }
-    if (!window.confirm("সতর্কতা: গুগল শিটের তথ্য দিয়ে বর্তমান অ্যাপের ডাটাবেজ পরিবর্তন করা হবে। আপনি কি এগিয়ে যেতে চান?")) {
+    if (!window.confirm(`সতর্কতা: গুগল শিটের তথ্য দিয়ে "${business.name}" শপের ডাটাবেজ রিস্টোর করা হবে। আপনি কি এগিয়ে যেতে চান?`)) {
       return;
     }
     setRestoringSheets(true);
     try {
       showNotify("গুগল শিট থেকে তথ্য সংগ্রহ করে অ্যাপে রিস্টোর করা হচ্ছে...", "info");
-      const sheetData = await fetchDataFromGoogleSheets(sheetsConfig.webAppUrl);
+      const sheetData = await fetchDataFromGoogleSheets(sheetsConfig.webAppUrl, business.id);
       await api.restoreDB(sheetData);
       showNotify("গুগল শিট থেকে সফলভাবে সমস্ত ডাটা রিস্টোর হয়েছে!", "success");
       setTimeout(() => {
@@ -538,9 +751,14 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
     if (!business) return;
     setSaving(true);
     try {
-      await api.updateBusiness(business);
-      if (onBusinessUpdate) onBusinessUpdate(business);
-      showNotify("ব্যবসার তথ্য সফলভাবে আপডেট করা হয়েছে");
+      const updated = await api.updateBusiness(business, business.id);
+      setBusiness(updated);
+      setShopsList(prev => prev.map(s => s.id === business.id ? { ...s, ...updated } : s));
+      const updatedSheetCfg = getLocalSheetsConfig(business.id);
+      setSheetsConfig(updatedSheetCfg);
+      setShopSheetStatuses(prev => ({ ...prev, [business.id]: updatedSheetCfg }));
+      if (onBusinessUpdate) onBusinessUpdate(updated);
+      showNotify(`শপের তথ্য এবং সংযুক্ত গুগল শিটের নাম (${updated.name} - হিসাবপাতি ডাটাবেজ) সফলভাবে আপডেট করা হয়েছে!`);
     } catch (err) {
       showNotify("আপডেট করতে সমস্যা হয়েছে", "error");
     } finally {
@@ -597,8 +815,26 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
     <div className="p-6 space-y-6 max-w-5xl mx-auto bg-slate-50 dark:bg-slate-950 transition-colors duration-300 min-h-full">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white font-bengali">সিস্টেম সেটিংস</h1>
-          <p className="text-slate-500 dark:text-slate-400 text-sm font-bengali">আপনার শপ এবং সিস্টেমের যাবতীয় কনফিগারেশন</p>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white font-bengali">সিস্টেম ও মাল্টি-শপ সেটিংস</h1>
+          <p className="text-slate-500 dark:text-slate-400 text-sm font-bengali">আপনার সকল শপ, আলাদা ডাটাবেজ এবং গুগল শিট কনফিগারেশন (শুধুমাত্র অ্যাডমিন)</p>
+        </div>
+
+        <div className="flex items-center gap-3 bg-white dark:bg-slate-900 px-4 py-2.5 rounded-2xl border border-blue-200 dark:border-blue-900/50 shadow-sm">
+          <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
+            <Store size={18} />
+          </div>
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 font-bengali">বর্তমান সক্রিয় শপ</p>
+            <p className="text-sm font-black text-slate-900 dark:text-white font-bengali">{business.name}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('shops')}
+            className="ml-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 text-blue-700 dark:text-blue-300 rounded-xl text-xs font-bold font-bengali transition-all flex items-center gap-1.5"
+          >
+            <ArrowRightLeft size={13} />
+            <span>শপ পরিবর্তন</span>
+          </button>
         </div>
       </div>
 
@@ -606,8 +842,9 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
         {/* Sidebar Tabs */}
         <div className="lg:col-span-1 space-y-2">
           {[
+            { id: 'shops', label: 'শপ লিস্ট ও নতুন শপ', icon: Building2, badge: `${shopsList.length || 1}টি শপ` },
             { id: 'profile', label: 'শপ প্রোফাইল', icon: Store, badge: null },
-            { id: 'sheets', label: 'গুগল শিট ডাটাবেজ', icon: FileSpreadsheet, badge: 'মেইন ডাটাবেজ' },
+            { id: 'sheets', label: 'গুগল শিট ডাটাবেজ', icon: FileSpreadsheet, badge: 'আলাদা শিট' },
             { id: 'backup', label: 'ড্রাইভ ব্যাকআপ', icon: Database, badge: null },
             { id: 'printer', label: 'প্রিন্টার সেটিংস', icon: Printer, badge: null },
           ].map(tab => (
@@ -625,7 +862,7 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
                 <span>{tab.label}</span>
               </div>
               {tab.badge && (
-                <span className={`text-[10px] px-2 py-0.5 rounded-full font-sans font-bold ${
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bengali font-bold ${
                   activeSubTab === tab.id ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
                 }`}>
                   {tab.badge}
@@ -638,8 +875,225 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
         {/* Content Area */}
         <div className="lg:col-span-3">
           <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-colors">
+            {/* MULTI-SHOP MANAGEMENT TAB */}
+            {activeSubTab === 'shops' && (
+              <div className="p-6 sm:p-8 space-y-6 animate-in fade-in">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 bg-gradient-to-br from-blue-600 via-indigo-600 to-slate-900 rounded-3xl text-white shadow-xl shadow-blue-900/20">
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 bg-white/15 backdrop-blur-md rounded-2xl flex items-center justify-center shrink-0">
+                      <Building2 size={30} className="text-white" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-xl font-bold font-bengali">মাল্টি-শপ ডাটাবেজ ম্যানেজমেন্ট</h3>
+                        <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-400/20 text-emerald-200 border border-emerald-300/30 font-bengali">
+                          ১০০% আলাদা ডাটাবেজ
+                        </span>
+                      </div>
+                      <p className="text-xs text-blue-100/90 font-bengali mt-1 leading-relaxed">
+                        প্রতিটি শপের পণ্য, কাস্টমার, বকেয়া, বিক্রয়, স্টাফ এবং গুগল শিট সম্পূর্ণ আলাদা। কোনো শপের তথ্যের সাথে অন্য শপের তথ্য কখনোই মিক্স হবে না।
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddShopModal(true)}
+                    className="self-start sm:self-auto px-5 py-3 bg-white text-blue-700 hover:bg-blue-50 rounded-2xl font-bold font-bengali text-xs flex items-center gap-2 shadow-lg shrink-0 transition-all hover:scale-105"
+                  >
+                    <Plus size={16} strokeWidth={3} />
+                    <span>নতুন শপ যুক্ত করুন</span>
+                  </button>
+                </div>
+
+                {/* Shops List */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-base font-bold text-slate-900 dark:text-white font-bengali flex items-center gap-2">
+                      <Store size={18} className="text-blue-600" />
+                      <span>আপনার সকল শপের তালিকা ({shopsList.length}টি)</span>
+                    </h4>
+                    <span className="text-xs text-slate-500 dark:text-slate-400 font-bengali">
+                      যে শপে কাজ করতে চান সেটিতে "এই শপে প্রবেশ করুন" বাটনে ক্লিক করুন
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {shopsList.map((shop, idx) => {
+                      const isActive = shop.id === business.id;
+                      const shopSheet = shopSheetStatuses[shop.id];
+                      const hasSheet = Boolean(shopSheet && (shopSheet.sheetUrl || shopSheet.webAppUrl));
+
+                      return (
+                        <div
+                          key={shop.id}
+                          className={cn(
+                            "p-5 rounded-3xl border-2 transition-all flex flex-col justify-between gap-4 relative overflow-hidden",
+                            isActive
+                              ? "border-blue-600 bg-blue-50/40 dark:bg-blue-950/20 shadow-lg shadow-blue-500/10"
+                              : "border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 hover:border-blue-300 dark:hover:border-slate-700"
+                          )}
+                        >
+                          <div className="space-y-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-center gap-3">
+                                <div className={cn(
+                                  "w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 font-bold text-lg overflow-hidden border",
+                                  isActive
+                                    ? "bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-500/30"
+                                    : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+                                )}>
+                                  {shop.logo ? (
+                                    <img src={shop.logo} alt={shop.name} className="w-full h-full object-contain p-1 bg-white" />
+                                  ) : (
+                                    <Store size={22} />
+                                  )}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <h5 className="font-black text-slate-900 dark:text-white font-bengali text-base">
+                                      {shop.name}
+                                    </h5>
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-200/70 dark:bg-slate-700 text-slate-600 dark:text-slate-300 font-bengali font-bold">
+                                      শপ #{idx + 1}
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-slate-500 dark:text-slate-400 font-bengali mt-0.5">
+                                    {shop.address || "ঠিকানা দেওয়া হয়নি"} {shop.phone ? `• ${shop.phone}` : ""}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {isActive && (
+                                <span className="px-3 py-1 rounded-full bg-emerald-600 text-white text-[11px] font-bold font-bengali flex items-center gap-1 shadow-sm shrink-0">
+                                  <CheckCircle size={12} />
+                                  সক্রিয় শপ
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200/60 dark:border-slate-700/60">
+                              <span className="text-[11px] px-2.5 py-1 rounded-xl font-bengali font-bold flex items-center gap-1.5 bg-emerald-100/80 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300">
+                                <FileSpreadsheet size={13} />
+                                <span>গুগল শিট সংযুক্ত ({shopSheet?.sheetName || `${shop.name} - হিসাবপাতি ডাটাবেজ`})</span>
+                              </span>
+
+                              {shopSheet?.sheetUrl && (
+                                <a
+                                  href={shopSheet.sheetUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-[11px] px-2.5 py-1 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-blue-600 dark:text-blue-400 font-bengali font-bold hover:underline flex items-center gap-1"
+                                >
+                                  <ExternalLink size={11} />
+                                  শিট খুলুন
+                                </a>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 pt-1">
+                            {isActive ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveSubTab('profile')}
+                                  className="flex-1 py-2.5 px-3 bg-white dark:bg-slate-800 border border-blue-200 dark:border-slate-700 text-blue-700 dark:text-blue-300 rounded-xl text-xs font-bold font-bengali hover:bg-blue-50 transition-all flex items-center justify-center gap-1.5"
+                                >
+                                  <Store size={14} />
+                                  <span>নাম ও প্রোফাইল এডিট</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveSubTab('sheets')}
+                                  className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold font-bengali transition-all flex items-center justify-center gap-1.5 shadow-sm"
+                                >
+                                  <FileSpreadsheet size={14} />
+                                  <span>গুগল শিট সেটআপ</span>
+                                </button>
+                                {shop.id !== "main-business" && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteShop(shop)}
+                                    className="p-2.5 text-rose-500 hover:text-white hover:bg-rose-600 bg-rose-50 dark:bg-rose-950/30 rounded-xl border border-rose-200 dark:border-rose-800 transition-all shrink-0"
+                                    title="শপ ও গুগল শিট ডিলিট করুন (অ্যাডমিন পাসওয়ার্ড আবশ্যক)"
+                                  >
+                                    <Trash2 size={15} />
+                                  </button>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={switchingShopId === shop.id}
+                                  onClick={() => handleSwitchShop(shop)}
+                                  className="flex-1 py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold font-bengali transition-all flex items-center justify-center gap-2 shadow-md shadow-blue-600/20 disabled:opacity-50"
+                                >
+                                  {switchingShopId === shop.id ? (
+                                    <>
+                                      <RefreshCw size={14} className="animate-spin" />
+                                      <span>প্রবেশ করা হচ্ছে...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <ArrowRightLeft size={14} />
+                                      <span>এই শপে প্রবেশ করুন</span>
+                                    </>
+                                  )}
+                                </button>
+                                {shop.id !== "main-business" && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteShop(shop)}
+                                    className="p-2.5 text-rose-500 hover:text-white hover:bg-rose-600 bg-rose-50 dark:bg-rose-950/30 rounded-xl border border-rose-200 dark:border-rose-800 transition-all shrink-0"
+                                    title="শপ ও গুগল শিট ডিলিট করুন (অ্যাডমিন পাসওয়ার্ড আবশ্যক)"
+                                  >
+                                    <Trash2 size={15} />
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Info Box explaining Multi-Shop Rules */}
+                <div className="p-5 bg-slate-50 dark:bg-slate-800/50 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-2.5">
+                  <h5 className="text-xs font-bold text-slate-800 dark:text-slate-200 font-bengali flex items-center gap-2">
+                    <ShieldCheck size={16} className="text-emerald-600" />
+                    মাল্টি-শপ সিস্টেম যেভাবে কাজ করে:
+                  </h5>
+                  <ul className="text-xs text-slate-600 dark:text-slate-400 font-bengali space-y-1.5 leading-relaxed">
+                    <li>• <strong>সুপার অ্যাডমিন অ্যাক্সেস:</strong> সকল শপের জন্য আপনার সুপার অ্যাডমিন ইমেইল ও পাসওয়ার্ড একই থাকবে। আপনি এখান থেকে যেকোনো সময় শপ পরিবর্তন করে সেই শপের সকল হিসাব দেখতে ও পরিচালনা করতে পারবেন।</li>
+                    <li>• <strong>শপভিত্তিক আলাদা ইউজার/স্টাফ:</strong> আপনি যে শপে থাকা অবস্থায় <strong>"ইউজার"</strong> ট্যাব থেকে সেলসম্যান বা স্টাফ তৈরি করবেন, সেই স্টাফ শুধুমাত্র ওই শপের ইউজার হিসেবে গণ্য হবে। লগইন পেজে সেই স্টাফ তার ইমেইল ও পাসওয়ার্ড দিয়ে লগইন করলে সে সরাসরি তার নিজস্ব শপেই প্রবেশ করবে।</li>
+                    <li>• <strong>নিরাপত্তা ও সীমাবদ্ধতা:</strong> অ্যাডমিন ছাড়া অন্য কোনো ইউজার (সেলসম্যান/ম্যানেজার/স্টাফ) সেটিংস দেখতে পাবে না এবং শপ পরিবর্তনও করতে পারবে না।</li>
+                    <li>• <strong>স্বয়ংক্রিয় আলাদা গুগল শিট:</strong> নতুন শপ তৈরি করার সাথে সাথেই অ্যাপ নিজে থেকেই ওই শপের নামে নতুন একটি গুগল শিট তৈরি করে শপটির সাথে সংযুক্ত করে দেয়।</li>
+                  </ul>
+                </div>
+              </div>
+            )}
+
             {activeSubTab === 'profile' && business && (
               <form onSubmit={handleUpdateBusiness} className="p-8 space-y-6">
+                <div className="p-4 bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/40 rounded-2xl flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Store size={20} className="text-blue-600" />
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-bengali">
+                      আপনি বর্তমানে <strong className="text-blue-600 dark:text-blue-400">"{business.name}"</strong> শপের প্রোফাইল সম্পাদনা করছেন
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveSubTab('shops')}
+                    className="text-xs font-bold text-blue-600 hover:underline font-bengali"
+                  >
+                    অন্য শপ সিলেক্ট করুন →
+                  </button>
+                </div>
+
                 <div className="flex items-center gap-6 mb-8 p-6 bg-slate-50 dark:bg-slate-800/50 rounded-3xl border border-slate-100 dark:border-slate-800">
                   <div className="relative group">
                     <div className="w-24 h-24 bg-white dark:bg-slate-800 rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-400 dark:text-slate-600 overflow-hidden group-hover:border-primary transition-all">
@@ -689,7 +1143,7 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
                   </div>
                   <div>
                     <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 font-bengali">শপ ইনফরমেশন</h3>
-                    <p className="text-sm text-slate-500 dark:text-slate-400 font-bengali">ইনভয়েস এবং রিপোর্টে এই তথ্যগুলো দেখা যাবে</p>
+                    <p className="text-sm text-slate-500 dark:text-slate-400 font-bengali">ইনভয়েস এবং রিপোর্টে এই শপের তথ্যগুলো দেখা যাবে</p>
                   </div>
                 </div>
 
@@ -770,8 +1224,8 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
                       <Database size={32} />
                     </div>
                     <div>
-                      <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 font-bengali">ব্যাকআপ অ্যান্ড রিস্টোর</h3>
-                      <p className="text-sm text-slate-500 dark:text-slate-400 font-bengali">আপনার সিস্টেমের সকল তথ্য সুরক্ষিত রাখুন</p>
+                      <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 font-bengali">ব্যাকআপ অ্যান্ড রিস্টোর ({business.name})</h3>
+                      <p className="text-sm text-slate-500 dark:text-slate-400 font-bengali">বর্তমানে সক্রিয় শপের সকল তথ্য সুরক্ষিত রাখুন</p>
                     </div>
                   </div>
                 </div>
@@ -1094,6 +1548,23 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
             {/* GOOGLE SHEETS MASTER DATABASE TAB */}
             {activeSubTab === 'sheets' && (
               <div className="p-6 sm:p-8 space-y-6 animate-in fade-in">
+                {/* Active Shop Banner */}
+                <div className="p-4 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 rounded-2xl flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Store size={18} className="text-emerald-600" />
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-bengali">
+                      সক্রিয় শপ: <strong className="text-emerald-700 dark:text-emerald-400">"{business.name}"</strong> — এই শপের জন্য আলাদা গুগল শিট ডাটাবেজ কনফিগারেশন
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveSubTab('shops')}
+                    className="text-xs font-bold text-emerald-700 dark:text-emerald-400 hover:underline font-bengali"
+                  >
+                    শপ পরিবর্তন →
+                  </button>
+                </div>
+
                 {/* Banner Header */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-800 rounded-3xl text-white shadow-xl shadow-emerald-900/20">
                   <div className="flex items-center gap-4">
@@ -1102,13 +1573,13 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <h3 className="text-xl font-bold font-bengali">গুগল শিট মেইন ডাটাবেজ</h3>
+                        <h3 className="text-xl font-bold font-bengali">{business.name} - গুগল শিট ডাটাবেজ</h3>
                         <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-400/30 text-emerald-100 border border-emerald-300/30">
-                          ফ্রি আজীবন
+                          শপভিত্তিক আলাদা শিট
                         </span>
                       </div>
                       <p className="text-xs text-emerald-100/90 font-bengali mt-1 leading-relaxed">
-                        আপনার অ্যাপের পণ্য, ক্রেতা, মেমো ও হিসাব গুগল শিটের হুবহু ৯টি ট্যাবে স্বয়ংক্রিয়ভাবে সংরক্ষিত ও আপডেট থাকবে।
+                        এই শপের পণ্য, ক্রেতা, মেমো ও হিসাব শুধুমাত্র এই শপের গুগল শিটের ৯টি ট্যাবে স্বয়ংক্রিয়ভাবে সংরক্ষিত ও আপডেট থাকবে।
                       </p>
                     </div>
                   </div>
@@ -1127,23 +1598,18 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
                 <div className="p-6 bg-slate-50 dark:bg-slate-800/50 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-4">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex items-center gap-3">
-                      <div className={cn(
-                        "w-4 h-4 rounded-full flex items-center justify-center",
-                        sheetsConfig.webAppUrl ? "bg-emerald-500 animate-pulse ring-4 ring-emerald-100 dark:ring-emerald-950" : "bg-rose-500"
-                      )} />
+                      <div className="w-4 h-4 rounded-full flex items-center justify-center bg-emerald-500 animate-pulse ring-4 ring-emerald-100 dark:ring-emerald-950" />
                       <div>
                         <h4 className="font-bold text-slate-900 dark:text-slate-100 font-bengali text-sm flex items-center gap-2">
-                          {sheetsConfig.webAppUrl ? "গুগল শিট ডাটাবেজ সচল রয়েছে" : "গুগল শিট এখনও সংযুক্ত করা হয়নি"}
-                          {sheetsConfig.sheetName && (
-                            <span className="text-xs font-normal text-slate-500 dark:text-slate-400 font-sans">
-                              ({sheetsConfig.sheetName})
-                            </span>
-                          )}
+                          গুগল শিট ডাটাবেজ সংযুক্ত রয়েছে
+                          <span className="text-xs font-normal text-slate-500 dark:text-slate-400 font-bengali">
+                            ({sheetsConfig.sheetName || `${business.name} - হিসাবপাতি ডাটাবেজ`})
+                          </span>
                         </h4>
                         <p className="text-xs text-slate-500 dark:text-slate-400 font-bengali">
                           {sheetsConfig.lastSyncAt 
                             ? `সর্বশেষ পূর্ণাঙ্গ সিঙ্ক: ${formatDhakaDateTime(sheetsConfig.lastSyncAt)}`
-                            : "এখনও পূর্ণাঙ্গ সিঙ্ক করা হয়নি। নিচে 'সম্পূর্ণ ডাটা সিঙ্ক' বাটনে চাপুন।"}
+                            : "শপের সাথে স্বয়ংক্রিয়ভাবে গুগল শিট সংযুক্ত রয়েছে।"}
                         </p>
                       </div>
                     </div>
@@ -1591,6 +2057,268 @@ export function Settings({ onBusinessUpdate }: { onBusinessUpdate?: (b: Business
                 </button>
               </div>
             </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Add New Shop Modal */}
+      {showAddShopModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-8 max-w-lg w-full border border-slate-200 dark:border-slate-800 shadow-2xl space-y-5 max-h-[92vh] overflow-y-auto custom-scrollbar"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                  <Building2 size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-white font-bengali">নতুন শপ যুক্ত করুন</h3>
+                  <p className="text-xs text-slate-500 font-bengali">নতুন শপের জন্য সম্পূর্ণ আলাদা ডাটাবেজ ও গুগল শিট তৈরি হবে</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddShopModal(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 flex items-center justify-center font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateNewShop} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 font-bengali mb-1.5">
+                  নতুন শপের নাম <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newShopForm.name}
+                  onChange={e => setNewShopForm({ ...newShopForm, name: e.target.value })}
+                  placeholder="যেমন: হিসাব পাতি - শাখা ২ (উত্তরা)"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm font-bengali text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 font-bengali mb-1.5">
+                    শপের মোবাইল নম্বর
+                  </label>
+                  <input
+                    type="text"
+                    value={newShopForm.phone}
+                    onChange={e => setNewShopForm({ ...newShopForm, phone: e.target.value })}
+                    placeholder="017XXXXXXXX"
+                    className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm font-sans text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 font-bengali mb-1.5">
+                    কারেন্সি (Currency)
+                  </label>
+                  <select
+                    value={newShopForm.currency}
+                    onChange={e => setNewShopForm({ ...newShopForm, currency: e.target.value })}
+                    className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm font-sans text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="BDT">BDT (৳)</option>
+                    <option value="USD">USD ($)</option>
+                    <option value="INR">INR (₹)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 font-bengali mb-1.5">
+                  শপের ঠিকানা
+                </label>
+                <input
+                  type="text"
+                  value={newShopForm.address}
+                  onChange={e => setNewShopForm({ ...newShopForm, address: e.target.value })}
+                  placeholder="শপের ঠিকানা লিখুন"
+                  className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm font-bengali text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="p-4 bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 rounded-2xl space-y-2.5">
+                <div className="flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                    <Sparkles size={18} />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-emerald-900 dark:text-emerald-200 font-bengali">
+                      স্বয়ংক্রিয় গুগল শিট তৈরি ও সংযোগ (Auto Google Sheet Creation)
+                    </p>
+                    <p className="text-[11px] text-emerald-800/90 dark:text-emerald-300/80 font-bengali leading-relaxed mt-0.5">
+                      নতুন শপ তৈরি করার সাথে সাথেই স্বয়ংক্রিয়ভাবে আপনার গুগল ড্রাইভে <strong>"{newShopForm.name.trim() || "নতুন শপ"} - হিসাবপাতি ডাটাবেজ"</strong> নামে সম্পূর্ণ নতুন একটি গুগল শিট তৈরি হয়ে এই শপের সাথে যুক্ত হয়ে যাবে! আপনাকে ম্যানুয়ালি শিট তৈরি করতে হবে না।
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2.5 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={switchImmediately}
+                  onChange={e => setSwitchImmediately(e.target.checked)}
+                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-xs font-bold text-slate-700 dark:text-slate-300 font-bengali">
+                  শপ তৈরি করার সাথে সাথেই এই নতুন শপে প্রবেশ করুন
+                </span>
+              </label>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddShopModal(false)}
+                  className="flex-1 py-3 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl font-bold font-bengali text-xs hover:bg-slate-200 transition-all"
+                >
+                  বাতিল করুন
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingShop}
+                  className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold font-bengali text-xs shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                >
+                  {creatingShop ? (
+                    <>
+                      <RefreshCw size={15} className="animate-spin" />
+                      <span>তৈরি হচ্ছে...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={16} />
+                      <span>নতুন শপ তৈরি করুন</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Admin Verification Modal for Deleting a Shop & its Google Sheet */}
+      {shopToDelete && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-8 max-w-md w-full border border-rose-200 dark:border-rose-900/50 shadow-2xl space-y-5"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center">
+                  <Trash2 size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-white font-bengali">শপ ও গুগল শিট ডিলিট নিশ্চিতকরণ</h3>
+                  <p className="text-xs text-rose-600 dark:text-rose-400 font-bengali font-bold">শুধুমাত্র অ্যাডমিন ইমেইল ও পাসওয়ার্ড দিয়ে ডিলিট করা যাবে</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShopToDelete(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 flex items-center justify-center font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-4 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 rounded-2xl space-y-2 text-xs font-bengali">
+              <p className="font-bold text-rose-900 dark:text-rose-200">
+                ⚠️ আপনি কি নিশ্চিতভাবে <span className="underline">"{shopToDelete.name}"</span> শপটি ডিলিট করতে চান?
+              </p>
+              <p className="text-rose-700 dark:text-rose-300 leading-relaxed">
+                এই শপটি ডিলিট করলে শপের সকল ডাটাবেজ তথ্যের পাশাপাশি এই শপের সংযুক্ত গুগল শিট (<strong>{shopSheetStatuses[shopToDelete.id]?.sheetName || `${shopToDelete.name} - হিসাবপাতি ডাটাবেজ`}</strong>)-ও স্বয়ংক্রিয়ভাবে ডিলিট হয়ে যাবে।
+              </p>
+            </div>
+
+            <form onSubmit={handleConfirmDeleteShop} className="space-y-4">
+              {deleteError && (
+                <div className="p-3 bg-rose-100 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 rounded-xl text-xs font-bold text-rose-700 dark:text-rose-300 font-bengali flex items-center gap-2">
+                  <AlertCircle size={15} className="shrink-0" />
+                  <span>{deleteError}</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 font-bengali mb-1.5">
+                  অ্যাডমিনের ইমেইল <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                  <input
+                    type="email"
+                    required
+                    autoComplete="off"
+                    value={deleteAuthForm.email}
+                    onChange={e => setDeleteAuthForm({ ...deleteAuthForm, email: e.target.value })}
+                    placeholder="অ্যাডমিনের ইমেইল লিখুন"
+                    className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-3.5 py-2.5 text-sm font-sans text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 font-bengali mb-1.5">
+                  অ্যাডমিনের পাসওয়ার্ড <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                  <input
+                    type={showDeletePass ? "text" : "password"}
+                    required
+                    autoComplete="new-password"
+                    value={deleteAuthForm.password}
+                    onChange={e => setDeleteAuthForm({ ...deleteAuthForm, password: e.target.value })}
+                    placeholder="অ্যাডমিনের পাসওয়ার্ড লিখুন"
+                    className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-10 py-2.5 text-sm font-sans text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowDeletePass(!showDeletePass)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  >
+                    {showDeletePass ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  disabled={deletingShop}
+                  onClick={() => setShopToDelete(null)}
+                  className="flex-1 py-3 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl font-bold font-bengali text-xs hover:bg-slate-200 transition-all"
+                >
+                  বাতিল করুন
+                </button>
+                <button
+                  type="submit"
+                  disabled={deletingShop}
+                  className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold font-bengali text-xs shadow-lg shadow-rose-600/20 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+                >
+                  {deletingShop ? (
+                    <>
+                      <RefreshCw size={15} className="animate-spin" />
+                      <span>যাচাই ও ডিলিট হচ্ছে...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={15} />
+                      <span>শপ ও গুগল শিট ডিলিট করুন</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </motion.div>
         </div>
       )}

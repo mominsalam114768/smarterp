@@ -5,7 +5,7 @@
 
 import { BarChart3, PieChart as PieChartIcon, FileSpreadsheet, Download, Activity, Printer, TrendingUp, DollarSign, AlertCircle } from "lucide-react";
 import { useState, useEffect } from "react";
-import { api } from "../services/api";
+import { api, isOtherProduct } from "../services/api";
 import { DashboardStats, User } from "../types";
 import { printReport } from "../lib/printUtils";
 import { getDhakaDateString, formatDhakaDate } from "../lib/utils";
@@ -61,7 +61,14 @@ export function Reports({ user }: { user: User | null }) {
       // Calculate Stats based on range
       const rangeSales = filteredSales.reduce((sum, s) => sum + s.totalAmount, 0);
       const rangeExpense = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
-      const totalDue = customers.reduce((sum, c) => sum + (c.dueAmount || 0), 0);
+      const totalDue = customers.reduce((sum, c) => {
+        const d = Number(c.dueAmount) || 0;
+        return d > 0 ? sum + d : sum;
+      }, 0);
+      const totalCustomerAdvance = customers.reduce((sum, c) => {
+        const d = Number(c.dueAmount) || 0;
+        return d < 0 ? sum + Math.abs(d) : sum;
+      }, 0);
       
       const todayDhaka = getDhakaDateString();
       const nowDhaka = getDhakaDateString();
@@ -74,11 +81,12 @@ export function Reports({ user }: { user: User | null }) {
         monthlySales: rangeSales, // Now represents selected range
         totalProfit: 0, 
         totalDue,
+        totalCustomerAdvance,
         totalExpense: rangeExpense, // Now represents selected range
         totalProducts: products.length,
-        lowStockCount: products.filter(p => p.stock <= 5).length,
-        expiredProductCount: products.filter(p => p.expiryDate && p.expiryDate < nowDhaka).length,
-        aboutToExpireCount: products.filter(p => p.expiryDate && p.expiryDate >= nowDhaka && p.expiryDate <= expiryThreshold).length,
+        lowStockCount: products.filter(p => !isOtherProduct(p) && p.stock <= 5).length,
+        expiredProductCount: products.filter(p => !isOtherProduct(p) && p.expiryDate && p.expiryDate < nowDhaka).length,
+        aboutToExpireCount: products.filter(p => !isOtherProduct(p) && p.expiryDate && p.expiryDate >= nowDhaka && p.expiryDate <= expiryThreshold).length,
         recentSales: filteredSales.slice(0, 5)
       };
 
@@ -138,6 +146,7 @@ export function Reports({ user }: { user: User | null }) {
       { label: "নির্বাচিত সময়ের মোট খরচ", value: `৳ ${stats.totalExpense.toLocaleString('bn-BD')}` },
       { label: "মোট নিট লাভ/ক্ষতি", value: `৳ ${stats.totalProfit.toLocaleString('bn-BD')}` },
       { label: "বর্তমান মোট কাস্টমার বকেয়া", value: `৳ ${stats.totalDue.toLocaleString('bn-BD')}` },
+      { label: "বর্তমান মোট ক্রেতা পাবে (অ্যাডভান্স)", value: `৳ ${(stats.totalCustomerAdvance || 0).toLocaleString('bn-BD')}` },
       { label: "স্টকে থাকা মোট পণ্যের সংখ্যা", value: `${stats.totalProducts} টি` },
       { label: "স্টক ফুরিয়ে যাওয়া পণ্যের সংখ্যা", value: `${stats.lowStockCount} টি` },
     ];
@@ -326,9 +335,14 @@ export function Reports({ user }: { user: User | null }) {
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm transition-colors">
-          <p className="text-slate-500 dark:text-slate-400 text-xs font-bold font-bengali mb-4">মোট কাস্টমার বকেয়া</p>
+          <p className="text-slate-500 dark:text-slate-400 text-xs font-bold font-bengali mb-2">মোট কাস্টমার বকেয়া</p>
           <p className="text-3xl font-black text-rose-600 dark:text-rose-500 font-sans">৳ {stats?.totalDue}</p>
-          <div className="mt-4 flex items-center text-xs text-rose-500 dark:text-rose-400 gap-1 font-bengali">
+          {(stats?.totalCustomerAdvance || 0) > 0 && (
+            <p className="mt-2 text-xs font-bold text-emerald-600 dark:text-emerald-400 font-bengali">
+              ক্রেতা পাবে (অ্যাডভান্স): ৳ {stats?.totalCustomerAdvance}
+            </p>
+          )}
+          <div className="mt-3 flex items-center text-xs text-rose-500 dark:text-rose-400 gap-1 font-bengali">
              <AlertCircle size={14} />
              দ্রুত সংগ্রহ করা প্রয়োজন
           </div>
