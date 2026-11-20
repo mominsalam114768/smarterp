@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, FormEvent, ChangeEvent } from "react";
-import { api } from "../services/api";
+import { api, isGlobalSuperAdmin } from "../services/api";
 import { User } from "../types";
 import { Users, UserPlus, Phone, Mail, Shield, Edit, Trash2, X, CheckCircle2, Search, Key, Plus, RefreshCw, AlertCircle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -45,8 +45,8 @@ export function UserManagement({ user }: UserManagementProps) {
   const handleAdminResetPassword = async (e: FormEvent) => {
     e.preventDefault();
     if (!resetUser) return;
-    if (!newPassword || newPassword.trim().length < 4) {
-      showNotify("নতুন পাসওয়ার্ড কমপক্ষে ৪ অক্ষরের হতে হবে", "error");
+    if (!newPassword || newPassword.trim().length < 6) {
+      showNotify("নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে", "error");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -108,6 +108,7 @@ export function UserManagement({ user }: UserManagementProps) {
   };
 
   useEffect(() => {
+    setFormData(prev => ({ ...prev, businessId: user.businessId }));
     loadUsers();
 
     const unsubUsers = api.subscribeUsers((items) => {
@@ -118,7 +119,7 @@ export function UserManagement({ user }: UserManagementProps) {
     return () => {
       unsubUsers();
     };
-  }, []);
+  }, [user?.businessId]);
 
   const loadUsers = async () => {
     setLoading(true);
@@ -147,14 +148,21 @@ export function UserManagement({ user }: UserManagementProps) {
       if (editingUser) {
         // If password is empty, don't include it in the update to avoid overwriting with empty
         const updateData = { ...updatedFormData };
-        if (!updateData.password) {
+        if (!updateData.password || !updateData.password.trim()) {
           delete updateData.password;
+        } else if (updateData.password.trim().length < 6) {
+          showNotify("নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে", "error");
+          return;
         }
         await api.updateUser(editingUser.id, updateData);
         showNotify("ইউজার তথ্য আপডেট করা হয়েছে");
       } else {
         if (!updatedFormData.password || !updatedFormData.email) {
             showNotify("ইমেইল ও পাসওয়ার্ড প্রদান করা আবশ্যক", "error");
+            return;
+        }
+        if (updatedFormData.password.trim().length < 6) {
+            showNotify("পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে", "error");
             return;
         }
 
@@ -320,14 +328,10 @@ export function UserManagement({ user }: UserManagementProps) {
                           {u.id === user.id && <span className="text-[10px] bg-slate-100 dark:bg-slate-800 px-1.5 rounded text-slate-500 font-bengali">আপনি</span>}
                         </div>
                         <p className="text-xs text-slate-400 dark:text-slate-500 font-sans">ID: {u.id}</p>
-                        {user.role === 'admin' && (
-                          <div className="flex items-center gap-1 mt-1">
-                             <Key size={10} className="text-slate-300" />
-                             <p className="text-[10px] text-slate-400 font-mono tracking-tight bg-slate-50 dark:bg-slate-900/50 px-1 rounded">
-                               Pass: {u.password}
-                             </p>
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1 mt-1">
+                          <Shield size={10} className="text-emerald-500" />
+                          <p className="text-[10px] text-slate-400 font-bengali">পাসওয়ার্ড এনক্রিপ্টেড ও সুরক্ষিত</p>
+                        </div>
                       </div>
                     </div>
                   </td>
@@ -349,31 +353,33 @@ export function UserManagement({ user }: UserManagementProps) {
                     </div>
                   </td>
                   <td className="px-6 py-4 text-right">
-                    <div className="flex items-center justify-end gap-2 transition-all">
-                      <button 
-                        onClick={() => handleOpenResetPassword(u)}
-                        className="p-2 text-slate-400 dark:text-slate-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-all"
-                        title="পাসওয়ার্ড পরিবর্তন / রিসেট"
-                      >
-                        <Key size={16} />
-                      </button>
-                      <button 
-                        onClick={() => handleEdit(u)}
-                        className="p-2 text-slate-400 dark:text-slate-500 hover:text-blue-500 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-all"
-                        title="সম্পাদনা"
-                      >
-                        <Edit size={16} />
-                      </button>
-                      {u.id !== user.id && (
+                    {(!isGlobalSuperAdmin(u) || isGlobalSuperAdmin(user)) && (
+                      <div className="flex items-center justify-end gap-2 transition-all">
                         <button 
-                          onClick={() => setShowDeleteConfirm(u.id)}
-                          className="p-2 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg transition-all"
-                          title="সরিয়ে ফেলুন"
+                          onClick={() => handleOpenResetPassword(u)}
+                          className="p-2 text-slate-400 dark:text-slate-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded-lg transition-all"
+                          title="পাসওয়ার্ড পরিবর্তন / রিসেট"
                         >
-                          <Trash2 size={16} />
+                          <Key size={16} />
                         </button>
-                      )}
-                    </div>
+                        <button 
+                          onClick={() => handleEdit(u)}
+                          className="p-2 text-slate-400 dark:text-slate-500 hover:text-blue-500 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-all"
+                          title="সম্পাদনা"
+                        >
+                          <Edit size={16} />
+                        </button>
+                        {u.id !== user.id && !isGlobalSuperAdmin(u) && (
+                          <button 
+                            onClick={() => setShowDeleteConfirm(u.id)}
+                            className="p-2 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-lg transition-all"
+                            title="সরিয়ে ফেলুন"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -460,11 +466,11 @@ export function UserManagement({ user }: UserManagementProps) {
                   <input 
                     required
                     type="password"
-                    minLength={4}
+                    minLength={6}
                     value={newPassword}
                     onChange={e => setNewPassword(e.target.value)}
                     className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl py-2.5 px-3.5 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-amber-500/20"
-                    placeholder="কমপক্ষে ৪ অক্ষরের পাসওয়ার্ড"
+                    placeholder="কমপক্ষে ৬ অক্ষরের পাসওয়ার্ড"
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -472,7 +478,7 @@ export function UserManagement({ user }: UserManagementProps) {
                   <input 
                     required
                     type="password"
-                    minLength={4}
+                    minLength={6}
                     value={confirmPassword}
                     onChange={e => setConfirmPassword(e.target.value)}
                     className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl py-2.5 px-3.5 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-amber-500/20"

@@ -18,6 +18,7 @@ export function SMSModule() {
   const [selectedRecipient, setSelectedRecipient] = useState("");
   const [message, setMessage] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [showClearLogsConfirm, setShowClearLogsConfirm] = useState(false);
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error'} | null>(null);
 
   const showNotify = (message: string, type: 'success' | 'error' = 'success') => {
@@ -62,11 +63,13 @@ export function SMSModule() {
     }
   };
 
-  const handleClearLogs = async () => {
-    if (!window.confirm("আপনি কি সব লগ মুছে ফেলতে চান?")) return;
+  const handleClearLogs = () => {
+    setShowClearLogsConfirm(true);
+  };
+
+  const confirmClearLogs = async () => {
+    setShowClearLogsConfirm(false);
     try {
-      // In a real app we'd have a delete method, but here we can just update state if it was a local db
-      // For now, let's just show a notification and maybe implement later if needed
       showNotify("লগ ক্লিয়ারেন্স এই ভার্সনে শুধুমাত্র অ্যাডমিন দ্বারা সম্ভব।");
     } catch (err) {
       showNotify("লগ মুছা সম্ভব হয়নি", "error");
@@ -532,6 +535,32 @@ export function SMSModule() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Clear Logs Confirmation Modal */}
+      {showClearLogsConfirm && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 max-w-sm w-full border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4 font-bengali">
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white">এসএমএস লগ মুছবেন?</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">আপনি কি সব এসএমএস লগ মুছে ফেলতে চান?</p>
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowClearLogsConfirm(false)}
+                className="flex-1 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl font-bold text-xs"
+              >
+                বাতিল
+              </button>
+              <button
+                type="button"
+                onClick={confirmClearLogs}
+                className="flex-1 py-2.5 bg-rose-600 text-white rounded-xl font-bold text-xs"
+              >
+                হ্যাঁ, নিশ্চিত
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast Notification */}
       {notification && (

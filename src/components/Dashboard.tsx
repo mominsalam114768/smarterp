@@ -3,12 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { TrendingUp, Users, Package, CreditCard, ArrowUpRight, ArrowDownRight, AlertCircle, Printer, FileText } from "lucide-react";
+import { TrendingUp, Users, Package, CreditCard, ArrowUpRight, ArrowDownRight, AlertCircle, Printer, FileText, FileSpreadsheet, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api } from "../services/api";
+import { api, isShopAdmin } from "../services/api";
 import { DashboardStats, User } from "../types";
 import { printInvoice, printReport } from "../lib/printUtils";
 import { formatDhakaDate } from "../lib/utils";
+import { googleDriveSignIn, hasActiveGoogleToken } from "../lib/drive";
+import { getLocalSheetsConfig, fetchCloudSheetsConfig, GoogleSheetsConfig } from "../lib/sheetsSync";
 import { 
   AreaChart, 
   Area, 
@@ -36,8 +38,42 @@ const chartData = [
 export function Dashboard({ user }: { user: User | null }) {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sheetCfg, setSheetCfg] = useState<GoogleSheetsConfig | null>(null);
+  const [connectingSheet, setConnectingSheet] = useState(false);
+
+  const activeShopId = user?.businessId || "main-business";
+  const showAdminSheetBanner =
+    isShopAdmin(user) &&
+    sheetCfg !== null &&
+    !sheetCfg.spreadsheetId &&
+    !sheetCfg.sheetUrl &&
+    !sheetCfg.webAppUrl;
+
+  const handleEnableAutoSheet = async () => {
+    setConnectingSheet(true);
+    try {
+      if (!hasActiveGoogleToken()) {
+        await googleDriveSignIn();
+      }
+      const ensured = await api.ensureShopGoogleSheet(activeShopId, { allowCreateIfMissing: false });
+      if (ensured) {
+        setSheetCfg(ensured);
+      } else {
+        setSheetCfg(getLocalSheetsConfig(activeShopId));
+      }
+    } catch (err: any) {
+      console.error("Dashboard auto-sheet connect failed:", err);
+    } finally {
+      setConnectingSheet(false);
+    }
+  };
 
   useEffect(() => {
+    setSheetCfg(getLocalSheetsConfig(activeShopId));
+    fetchCloudSheetsConfig(activeShopId)
+      .then(cfg => setSheetCfg(cfg))
+      .catch(() => {});
+
     const refreshStats = () => {
       api.getDashboardStats(user)
         .then(setStats)
@@ -59,7 +95,7 @@ export function Dashboard({ user }: { user: User | null }) {
       unsubCust();
       unsubExp();
     };
-  }, [user]);
+  }, [user, activeShopId]);
 
   const handlePrintDashboard = () => {
     if (!stats) return;
@@ -130,6 +166,42 @@ export function Dashboard({ user }: { user: User | null }) {
           </button>
         </div>
       </div>
+
+      {showAdminSheetBanner && (
+        <div className="p-3.5 bg-emerald-50/90 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3 font-bengali">
+            <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+              <FileSpreadsheet size={18} />
+            </div>
+            <div>
+              <h4 className="font-bold text-slate-900 dark:text-white text-xs sm:text-sm">
+                গুগল শিট ডাটাবেজ সংযোগ
+              </h4>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                শপের পূর্বের গুগল শিট শনাক্ত ও ডাটা রিস্টোর করতে সাইন-ইন করুন
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleEnableAutoSheet}
+            disabled={connectingSheet}
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold font-bengali transition-all shrink-0 disabled:opacity-60"
+          >
+            {connectingSheet ? (
+              <>
+                <RefreshCw size={14} className="animate-spin" />
+                <span>শনাক্ত হচ্ছে...</span>
+              </>
+            ) : (
+              <>
+                <FileSpreadsheet size={14} />
+                <span>গুগল শিট সংযুক্ত করুন</span>
+              </>
+            )}
+          </button>
+        </div>
+      )}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">

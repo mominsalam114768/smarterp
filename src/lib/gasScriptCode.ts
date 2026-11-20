@@ -1,53 +1,78 @@
 /**
  * @license
+ * @fileoverview Embedded Google Apps Script code for 1-click copy in Settings
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export const GOOGLE_APPS_SCRIPT_CODE = `/**
+export const GAS_SCRIPT_CODE = `/**
  * =========================================================================
  * হিসাবপাতি ERP (HishabPati ERP) - Google Sheets Master Database Engine
  * =========================================================================
- * এই স্ক্রিপ্টটি আপনার গুগল স্প্রেডশিটকে একটি সম্পূর্ণ স্বয়ংসম্পূর্ণ ERP ডাটাবেজে রূপান্তর করে।
- * অ্যাপের প্রতিটি ট্যাবের অনুরূপ বাংলা নামে শিট থাকবে:
- * 1. ড্যাশবোর্ড (Dashboard Summary & Auto-Formulas)
- * 2. পণ্য তালিকা (Products Inventory)
- * 3. বিক্রয় ও মেমো (Sales & Invoices)
- * 4. ক্রেতা (Customers & Balance)
- * 5. সরবরাহকারী (Suppliers Ledger)
- * 6. হিসাব ও খরচ (Accounting & Expenses)
- * 7. বকেয়া খাতা (Customer Due Management)
- * 8. ইউজার ও স্টাফ (Staff & Users)
- * 9. প্রতিষ্ঠান সেটিংস (Shop & Business Profile)
+ * অ্যাপের স্লাইড মেনু (Slide Menu), জমা-খরচ (Accounting), বকেয়া ও ক্রেতা পাবে (Due & Advance),
+ * অন্যান্য পণ্য (Custom Price / No Stock), এবং সেলসম্যান অনুমোদন রিকুয়েস্ট (Approvals) এর
+ * সাথে ১০০% সামঞ্জস্যপূর্ণ মাল্টি-শপ গুগল শিট ডাটাবেজ ইঞ্জিন।
  *
- * যদি হিসাবপাতি ওয়েব অ্যাপ কোনো কারণে বন্ধ বা নষ্ট হয়ে যায়, তবুও এই গুগল শিটটি 
- * স্বয়ংক্রিয় ফর্মুলা, হিসাব-নিকাশ এবং কাস্টম মেনু দিয়ে অ্যাপের মতোই কাজ করবে!
- *
- * ইন্সটলেশন নির্দেশিকা:
- * 1. Google Sheets এর মেনু থেকে Extensions -> Apps Script এ যান।
- * 2. এই সম্পূর্ণ কোডটি পেস্ট করুন।
- * 3. Deploy -> New Deployment -> Web App নির্বাচন করুন।
- * 4. 'Who has access' অপশনে 'Anyone' নির্বাচন করে Deploy দিন।
- * 5. প্রাপ্ত Web App URL টি হিসাবপাতি অ্যাপের Settings এ বসিয়ে দিন।
+ * অ্যাপের স্লাইড মেনু অনুযায়ী ট্যাবসমূহ (বাম থেকে ডানে):
+ * 1. ড্যাশবোর্ড (Dashboard, জমা-খরচ ও রিপোর্ট সামারি)
+ * 2. বিক্রয় ও মেমো (POS & Sales Invoices - চূড়ান্ত ও TEMPORARY মেমো)
+ * 3. বিক্রয় অর্ডার (Salesman POS & Due Payment Sales Orders)
+ * 4. পণ্য তালিকা (Products Inventory & 'অন্যান্য' কাস্টম মূল্য পণ্য)
+ * 5. ক্যাটাগরি (Product Categories)
+ * 6. ক্রেতা (Customers - বকেয়া পরিমাণ ও ক্রেতা পাবে সহ)
+ * 7. সরবরাহকারী (Suppliers & Payable Ledger)
+ * 8. হিসাব ও খরচ (Accounting - জমা-খরচ ও ব্যয়ের বিবরণ)
+ * 9. বকেয়া খাতা (Due & Customer Advance Book - বকেয়া পরিমাণ ও ক্রেতা পাবে)
+ * 10. এসএমএস লগ (SMS History & Notifications)
+ * 11. ইউজার ও স্টাফ (Shop Users, Roles & Permissions)
+ * 12. প্রতিষ্ঠান সেটিংস (Shop Profile & Sync Configuration)
  * =========================================================================
  */
 
-// Global Sheet Tab Names (App matching Bengali names)
 const SHEETS = {
   DASHBOARD: 'ড্যাশবোর্ড',
-  PRODUCTS: 'পণ্য তালিকা',
   SALES: 'বিক্রয় ও মেমো',
+  APPROVALS: 'বিক্রয় অর্ডার',
+  PRODUCTS: 'পণ্য তালিকা',
+  CATEGORIES: 'ক্যাটাগরি',
   CUSTOMERS: 'ক্রেতা',
   SUPPLIERS: 'সরবরাহকারী',
   EXPENSES: 'হিসাব ও খরচ',
   DUES: 'বকেয়া খাতা',
+  SMS: 'এসএমএস লগ',
   USERS: 'ইউজার ও স্টাফ',
-  CATEGORIES: 'ক্যাটাগরি',
   SETTINGS: 'প্রতিষ্ঠান সেটিংস'
 };
 
-// Colors for professional styling
+const ORDERED_SHEET_NAMES = [
+  SHEETS.DASHBOARD,
+  SHEETS.SALES,
+  SHEETS.APPROVALS,
+  SHEETS.PRODUCTS,
+  SHEETS.CATEGORIES,
+  SHEETS.CUSTOMERS,
+  SHEETS.SUPPLIERS,
+  SHEETS.EXPENSES,
+  SHEETS.DUES,
+  SHEETS.SMS,
+  SHEETS.USERS,
+  SHEETS.SETTINGS
+];
+
+const LEGACY_DUPLICATE_SHEETS = [
+  'Sheet1',
+  'পণ্য (Products)',
+  'বিক্রি (Sales)',
+  'গ্রাহক (Customers)',
+  'বকেয়া ও ক্রেতা পাবে (Due List)',
+  'বকেয়া কাস্টমার (Due List)',
+  'বাকি বিক্রি (Due Sales)',
+  'খরচ (Expenses)',
+  'সরবরাহকারী (Suppliers)',
+  'সারসংক্ষেপ (Summary)'
+];
+
 const THEME = {
-  HEADER_BG: '#1e3a8a', // Dark Royal Blue
+  HEADER_BG: '#1e3a8a',
   HEADER_FG: '#ffffff',
   ACCENT_BG: '#2563eb',
   ACCENT_FG: '#ffffff',
@@ -56,29 +81,32 @@ const THEME = {
   DUE_FG: '#991b1b',
   SUCCESS_BG: '#dcfce7',
   SUCCESS_FG: '#166534',
+  WARN_BG: '#fef3c7',
+  WARN_FG: '#92400e',
   BORDER_COLOR: '#cbd5e1'
 };
 
-/**
- * Triggered when spreadsheet is opened
- * Adds custom menu in Google Sheets for manual operations
- */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('📊 হিসাবপাতি ERP মেনু')
-    .addItem('🔄 সকল শিট ও ফর্মুলা রিফ্রেশ করুন', 'initializeAllSheets')
+    .addItem('🔄 সকল শিট, কলাম ও ফর্মুলা রিফ্রেশ করুন', 'initializeAllSheets')
     .addSeparator()
     .addItem('➕ নতুন বিক্রয় মেমো যুক্ত করুন', 'menuAddSalePrompt')
     .addItem('➕ নতুন পণ্য যুক্ত করুন', 'menuAddProductPrompt')
-    .addItem('💰 বকেয়া টাকা জমা নিন', 'menuRecordDuePaymentPrompt')
+    .addItem('💰 বকেয়া / অ্যাডভান্স টাকা জমা নিন', 'menuRecordDuePaymentPrompt')
     .addSeparator()
     .addItem('📥 অ্যাপের জন্য ব্যাকআপ JSON এক্সপোর্ট', 'menuExportJson')
     .addToUi();
 }
 
-/**
- * Resolve or Auto-Create the target Google Spreadsheet for a specific shop (businessId / spreadsheetId)
- */
+function isOtherProductItem(p) {
+  if (!p) return false;
+  if (p.isCustomPrice === true) return true;
+  const n = String(p.name || '').trim();
+  const bn = String(p.bnName || '').trim();
+  return n === 'অন্যান্য' || n === 'অন্যন্য' || bn === 'অন্যান্য' || bn === 'অন্যন্য' || n.toLowerCase() === 'other' || n.toLowerCase() === 'others';
+}
+
 function getTargetSpreadsheet(paramsOrPayload, allowAutoCreate) {
   const sheetId = paramsOrPayload && (paramsOrPayload.spreadsheetId || paramsOrPayload.sheetId);
   const bizId = paramsOrPayload && paramsOrPayload.businessId;
@@ -113,12 +141,6 @@ function getTargetSpreadsheet(paramsOrPayload, allowAutoCreate) {
         const createdSS = SpreadsheetApp.create(shopTitle);
         props.setProperty('SHOP_SHEET_' + bizId, createdSS.getId());
         initializeAllSheets(createdSS);
-        try {
-          const defaultSheet = createdSS.getSheetByName('Sheet1');
-          if (defaultSheet && createdSS.getSheets().length > 1) {
-            createdSS.deleteSheet(defaultSheet);
-          }
-        } catch (delErr) {}
         return createdSS;
       } catch (createErr) {}
     }
@@ -127,9 +149,6 @@ function getTargetSpreadsheet(paramsOrPayload, allowAutoCreate) {
   return SpreadsheetApp.getActiveSpreadsheet();
 }
 
-/**
- * Handle GET Requests (Health Check, Fetch Data, Dashboard Stats)
- */
 function doGet(e) {
   try {
     const params = (e && e.parameter) ? e.parameter : {};
@@ -156,7 +175,11 @@ function doGet(e) {
     }
 
     if (action === 'getDashboard') {
-      return jsonResponse(getLiveDashboardStats(ss));
+      return jsonResponse({
+        status: 'online',
+        spreadsheetId: ss.getId(),
+        spreadsheetName: ss.getName()
+      });
     }
 
     return jsonResponse({ error: 'অজানা অ্যাকশন', action: action });
@@ -165,9 +188,6 @@ function doGet(e) {
   }
 }
 
-/**
- * Handle POST Requests (Create Shop Sheet, Full Sync, Entity Sync, Restore)
- */
 function doPost(e) {
   try {
     let payload = {};
@@ -179,7 +199,7 @@ function doPost(e) {
 
     const action = payload.action || 'fullSync';
 
-    // 0a. Automatically delete a shop's dedicated Google Sheet when the shop is deleted
+    // 0a. Delete shop's dedicated Google Sheet when shop is deleted
     if (action === 'deleteShopSpreadsheet') {
       const props = PropertiesService.getScriptProperties();
       const bizId = payload.businessId || '';
@@ -213,7 +233,7 @@ function doPost(e) {
 
     const ss = getTargetSpreadsheet(payload, action === 'createShopSpreadsheet' || action === 'fullSync');
 
-    // 0b. Automatically rename a shop's dedicated Google Sheet when the shop's name is changed
+    // 0b. Rename shop's dedicated Google Sheet when shop name is changed
     if (action === 'renameShopSpreadsheet') {
       const cleanShopName = (payload.shopName || (payload.business && payload.business.name) || '').trim();
       if (cleanShopName) {
@@ -226,8 +246,8 @@ function doPost(e) {
             writeSettingsSheet(ss, payload.business);
           }
           const dashSheet = ss.getSheetByName(SHEETS.DASHBOARD);
-          if (dashSheet) {
-            dashSheet.getRange('A1').setValue(cleanShopName + ' - লাইভ ড্যাশবোর্ড ও অটো রিপোর্ট');
+          if (dashSheet && dashSheet.getLastRow() >= 2) {
+            dashSheet.getRange('B2').setValue(cleanShopName);
           }
         } catch (updErr) {}
       }
@@ -241,18 +261,25 @@ function doPost(e) {
       });
     }
 
-    // 0c. Automatically create & initialize a brand-new Google Sheet for a newly created shop
+    // 0c. Create & initialize a brand-new Google Sheet for a shop
     if (action === 'createShopSpreadsheet') {
       const initData = payload.data || {
-        business: payload.business || { name: payload.shopName || ss.getName() },
+        business: payload.business || { id: payload.businessId || 'main-business', name: payload.shopName || ss.getName() },
         products: [],
         customers: [],
         sales: [],
         suppliers: [],
         expenses: [],
         categories: [],
-        users: []
+        users: [],
+        approvalRequests: [],
+        smsLogs: []
       };
+      if (payload.shopName) {
+        try {
+          ss.rename(payload.shopName + ' - হিসাবপাতি ডাটাবেজ');
+        } catch (e) {}
+      }
       const result = performFullDatabaseSync(ss, initData);
       return jsonResponse({
         success: true,
@@ -265,7 +292,7 @@ function doPost(e) {
       });
     }
 
-    // 1. Full Synchronization of entire app state
+    // 1. Full Synchronization of entire shop state
     if (action === 'fullSync') {
       const data = payload.data || payload;
       const result = performFullDatabaseSync(ss, data);
@@ -291,9 +318,14 @@ function doPost(e) {
       return jsonResponse({ success: true, message: 'বিক্রয় মেমো শিটে যুক্ত হয়েছে', spreadsheetId: ss.getId() });
     }
 
+    if (action === 'syncApproval') {
+      syncSingleApproval(ss, payload.item, payload.operation || 'upsert');
+      return jsonResponse({ success: true, message: 'বিক্রয় অর্ডার শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
+    }
+
     if (action === 'syncCustomer') {
       syncSingleCustomer(ss, payload.item, payload.operation || 'upsert');
-      return jsonResponse({ success: true, message: 'ক্রেতার তথ্য শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
+      return jsonResponse({ success: true, message: 'ক্রেতা ও বকেয়া খাতা শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
     }
 
     if (action === 'syncSupplier') {
@@ -303,7 +335,12 @@ function doPost(e) {
 
     if (action === 'syncExpense') {
       syncSingleExpense(ss, payload.item, payload.operation || 'upsert');
-      return jsonResponse({ success: true, message: 'খরচ শিটে যুক্ত হয়েছে', spreadsheetId: ss.getId() });
+      return jsonResponse({ success: true, message: 'হিসাব ও খরচ শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
+    }
+
+    if (action === 'syncSMS') {
+      syncSingleSMS(ss, payload.item, payload.operation || 'upsert');
+      return jsonResponse({ success: true, message: 'এসএমএস লগ শিটে যুক্ত হয়েছে', spreadsheetId: ss.getId() });
     }
 
     if (action === 'syncUser') {
@@ -318,7 +355,7 @@ function doPost(e) {
 
     if (action === 'recordPayment') {
       syncCustomerPayment(ss, payload);
-      return jsonResponse({ success: true, message: 'পেমেন্ট শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
+      return jsonResponse({ success: true, message: 'পেমেন্ট ও বকেয়া খাতা শিটে আপডেট হয়েছে', spreadsheetId: ss.getId() });
     }
 
     return jsonResponse({ error: 'অজানা পোস্ট অ্যাকশন', action: action });
@@ -327,90 +364,102 @@ function doPost(e) {
   }
 }
 
-/**
- * Master Database Sync: Writes all entities to their matching Bengali sheets
- */
 function performFullDatabaseSync(ss, data) {
-  // Ensure all tabs exist with beautiful headers
   initializeAllSheets(ss);
 
   const counts = {
     products: 0,
     sales: 0,
+    approvals: 0,
     customers: 0,
     suppliers: 0,
     expenses: 0,
     users: 0,
     categories: 0,
-    dues: 0
+    dues: 0,
+    smsLogs: 0
   };
 
-  // 1. Business Info
   if (data.business) {
-    writeSettingsSheet(ss, data.business);
+    writeSettingsSheet(ss, data.business, data.smsConfig);
   }
 
-  // 2. Categories
   if (Array.isArray(data.categories)) {
     writeCategoriesSheet(ss, data.categories);
     counts.categories = data.categories.length;
   }
 
-  // 3. Products
   if (Array.isArray(data.products)) {
     writeProductsSheet(ss, data.products);
     counts.products = data.products.length;
   }
 
-  // 4. Customers & Dues
   if (Array.isArray(data.customers)) {
     writeCustomersSheet(ss, data.customers);
     writeDuesSheet(ss, data.customers);
     counts.customers = data.customers.length;
-    counts.dues = data.customers.filter(c => (Number(c.dueAmount) || 0) > 0).length;
+    counts.dues = data.customers.filter(c => (Number(c.dueAmount) || 0) !== 0).length;
   }
 
-  // 5. Sales
   if (Array.isArray(data.sales)) {
     writeSalesSheet(ss, data.sales);
     counts.sales = data.sales.length;
   }
 
-  // 6. Suppliers
+  if (Array.isArray(data.approvalRequests)) {
+    writeApprovalsSheet(ss, data.approvalRequests);
+    counts.approvals = data.approvalRequests.length;
+  }
+
   if (Array.isArray(data.suppliers)) {
     writeSuppliersSheet(ss, data.suppliers);
     counts.suppliers = data.suppliers.length;
   }
 
-  // 7. Expenses
   if (Array.isArray(data.expenses)) {
     writeExpensesSheet(ss, data.expenses);
     counts.expenses = data.expenses.length;
   }
 
-  // 8. Users
+  if (Array.isArray(data.smsLogs)) {
+    writeSMSSheet(ss, data.smsLogs);
+    counts.smsLogs = data.smsLogs.length;
+  }
+
   if (Array.isArray(data.users)) {
     writeUsersSheet(ss, data.users);
     counts.users = data.users.length;
   }
 
-  // 9. Auto-calculate Dashboard Summary
   writeDashboardSheet(ss, data);
+  reorderAllSheetsToMatchMenu(ss);
 
   return counts;
 }
 
-/**
- * 1. Initialize and ensure all sheets exist with standard headers
- */
 function initializeAllSheets(targetSS) {
   const ss = targetSS || SpreadsheetApp.getActiveSpreadsheet();
 
   const configs = [
     {
       name: SHEETS.DASHBOARD,
-      headers: ['বিষয় / মেট্রিক', 'বর্তমান মান', 'বিবরণ', 'ফর্মুলা / স্থিতি'],
-      colWidths: [220, 180, 260, 200]
+      headers: ['বিষয় / মেট্রিক (স্লাইড মেনু ও জমা-খরচ সামারি)', 'বর্তমান মান', 'বিবরণ ও হিসাব সূত্র', 'স্থিতি'],
+      colWidths: [270, 200, 310, 160]
+    },
+    {
+      name: SHEETS.SALES,
+      headers: ['মেমো নং (Invoice)', 'তারিখ ও সময় (ঢাকা)', 'ক্রেতার নাম', 'মোবাইল', 'পণ্যের বিবরণ', 'মোট টাকা (৳)', 'ছাড় (৳)', 'ভ্যাট (৳)', 'প্রদেয় বিল (৳)', 'নগদ জমা (৳)', 'বকেয়া পরিমাণ (৳)', 'ক্রেতা পাবে / অ্যাডভান্স (৳)', 'নিট ব্যালেন্স (৳)', 'পেমেন্ট মাধ্যম', 'মেমোর অবস্থা', 'বিক্রয়কর্মী', 'ক্রেতার আইডি', 'বিক্রয় আইডি', 'র কালেকশন JSON'],
+      colWidths: [130, 160, 160, 125, 250, 110, 85, 85, 115, 115, 125, 145, 120, 115, 145, 125, 125, 125, 180]
+    },
+    {
+      name: SHEETS.APPROVALS,
+      headers: ['রিকুয়েস্ট আইডি', 'তারিখ ও সময় (ঢাকা)', 'রিকুয়েস্টের ধরন', 'টেম্পোরারি ভাউচার/মেমো', 'চূড়ান্ত মেমো নং', 'সেলসম্যানের নাম', 'ক্রেতার নাম', 'ক্রেতার মোবাইল', 'মোট বিল / জমার পরিমাণ (৳)', 'নগদ জমা (৳)', 'বকেয়া / ব্যালেন্স (৳)', 'বর্তমান স্ট্যাটাস', 'সিদ্ধান্ত গ্রহণকারী', 'সিদ্ধান্তের সময়', 'বিস্তারিত JSON'],
+      colWidths: [140, 155, 165, 145, 130, 145, 155, 125, 150, 120, 130, 140, 135, 150, 180]
+    },
+    {
+      name: SHEETS.PRODUCTS,
+      headers: ['আইডি (ID)', 'পণ্যের নাম', 'বাংলা নাম', 'SKU', 'বারকোড', 'ক্যাটাগরি', 'ক্রয়মূল্য (৳)', 'বিক্রয়মূল্য (৳)', 'বর্তমান স্টক', 'সর্বনিম্ন স্টক', 'একক', 'স্টকের অবস্থা', 'পণ্যের ধরন', 'মেয়াদ উত্তীর্ণের তারিখ'],
+      colWidths: [135, 190, 175, 115, 130, 120, 110, 110, 110, 110, 80, 190, 155, 135]
     },
     {
       name: SHEETS.CATEGORIES,
@@ -418,39 +467,34 @@ function initializeAllSheets(targetSS) {
       colWidths: [140, 200, 260]
     },
     {
-      name: SHEETS.PRODUCTS,
-      headers: ['আইডি (ID)', 'পণ্যের নাম', 'বাংলা নাম', 'SKU', 'বারকোড', 'ক্যাটাগরি', 'ক্রয়মূল্য (৳)', 'বিক্রয়মূল্য (৳)', 'বর্তমান স্টক', 'সর্বনিম্ন স্টক', 'একক', 'স্টকের অবস্থা'],
-      colWidths: [140, 200, 180, 120, 130, 120, 110, 110, 110, 110, 80, 130]
-    },
-    {
-      name: SHEETS.SALES,
-      headers: ['মেমো নং (Invoice)', 'তারিখ ও সময় (ঢাকা)', 'ক্রেতার নাম', 'মোবাইল', 'পণ্যের বিবরণ', 'মোট টাকা (৳)', 'ছাড় (৳)', 'ভ্যাট (৳)', 'প্রদেয় বিল (৳)', 'নগদ জমা (৳)', 'বাকি টাকা (৳)', 'পেমেন্ট মাধ্যম', 'বিক্রয়কর্মী', 'র কালেকশন JSON'],
-      colWidths: [130, 160, 170, 130, 260, 110, 90, 90, 110, 110, 110, 120, 130, 200]
-    },
-    {
       name: SHEETS.CUSTOMERS,
-      headers: ['ক্রেতার আইডি', 'ক্রেতার নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'বর্তমান মোট বকেয়া (৳)', 'সর্বমোট কেনাকাটা (৳)', 'নিবন্ধন তারিখ'],
-      colWidths: [130, 180, 130, 220, 150, 150, 140]
-    },
-    {
-      name: SHEETS.DUES,
-      headers: ['ক্রমিক', 'ক্রেতার নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'বর্তমান বকেয়া টাকা (৳)', 'মোট ক্রয় (৳)', 'বকেয়ার অবস্থা', 'তাগাদা স্ট্যাটাস'],
-      colWidths: [70, 180, 130, 220, 150, 140, 130, 140]
+      headers: ['ক্রেতার আইডি', 'ক্রেতার নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'বকেয়া পরিমাণ (৳)', 'ক্রেতা পাবে / অ্যাডভান্স (৳)', 'নিট ব্যালেন্স (৳)', 'হিসাবের অবস্থা', 'সর্বমোট কেনাকাটা (৳)', 'ইউজার আইডি (CreatedBy)', 'নিবন্ধন তারিখ'],
+      colWidths: [135, 175, 130, 200, 135, 155, 135, 150, 145, 135, 130]
     },
     {
       name: SHEETS.SUPPLIERS,
-      headers: ['সরবরাহকারী আইডি', 'নাম', 'কোম্পানির নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'আমাদের বর্তমান দেনা (৳)', 'সর্বশেষ তারিখ'],
-      colWidths: [140, 180, 180, 130, 220, 160, 140]
+      headers: ['সরবরাহকারী আইডি', 'নাম', 'কোম্পানির নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'আমাদের বর্তমান দেনা (৳)', 'দেনার অবস্থা', 'সর্বশেষ তারিখ'],
+      colWidths: [140, 175, 175, 130, 200, 155, 145, 135]
     },
     {
       name: SHEETS.EXPENSES,
-      headers: ['খরচ আইডি', 'তারিখ (ঢাকা সময়)', 'খরচের খাত', 'টাকার পরিমাণ (৳)', 'বিবরণ / নোট', 'খরচকারী'],
-      colWidths: [130, 150, 160, 130, 260, 140]
+      headers: ['খরচ আইডি', 'তারিখ (ঢাকা সময়)', 'খরচের খাত (Category)', 'টাকার পরিমাণ (৳)', 'বিবরণ / নোট', 'এন্ট্রিকারী (ইউজার)', 'হিসাবের ধরন', 'ইউজার আইডি'],
+      colWidths: [135, 150, 165, 135, 250, 140, 135, 125]
+    },
+    {
+      name: SHEETS.DUES,
+      headers: ['ক্রমিক', 'ক্রেতার আইডি', 'ক্রেতার নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'বকেয়া পরিমাণ (৳)', 'ক্রেতা পাবে / অ্যাডভান্স (৳)', 'নিট ব্যালেন্স (৳)', 'মোট ক্রয় (৳)', 'হিসাবের অবস্থা', 'তাগাদা স্ট্যাটাস'],
+      colWidths: [65, 130, 175, 130, 195, 140, 160, 135, 135, 145, 190]
+    },
+    {
+      name: SHEETS.SMS,
+      headers: ['এসএমএস আইডি', 'তারিখ ও সময় (ঢাকা)', 'প্রাপকের মোবাইল নম্বর', 'বার্তা (Message)', 'স্ট্যাটাস'],
+      colWidths: [135, 160, 150, 340, 110]
     },
     {
       name: SHEETS.USERS,
-      headers: ['ইউজার আইডি', 'নাম', 'ইমেইল', 'মোবাইল', 'পদবী / রোল', 'অনুমতিসমূহ', 'সর্বশেষ সক্রিয়', 'পাসওয়ার্ড'],
-      colWidths: [130, 180, 200, 130, 120, 260, 150, 120]
+      headers: ['ইউজার আইডি', 'নাম', 'ইমেইল', 'মোবাইল', 'পদবী / রোল', 'শপ আইডি (Business ID)', 'অনুমতিসমূহ', 'সর্বশেষ সক্রিয়'],
+      colWidths: [130, 175, 200, 130, 115, 145, 250, 150]
     },
     {
       name: SHEETS.SETTINGS,
@@ -464,25 +508,47 @@ function initializeAllSheets(targetSS) {
     if (!sheet) {
       sheet = ss.insertSheet(cfg.name);
     }
-    // Setup header row if empty
     if (sheet.getLastRow() === 0) {
       sheet.appendRow(cfg.headers);
       applyHeaderStyle(sheet, cfg.headers.length);
     }
-    // Apply column widths
     if (cfg.colWidths) {
       cfg.colWidths.forEach((w, i) => {
-        sheet.setColumnWidth(i + 1, w);
+        try {
+          sheet.setColumnWidth(i + 1, w);
+        } catch (e) {}
       });
     }
   });
 
+  // Clean up legacy duplicate sheets if any exist
+  LEGACY_DUPLICATE_SHEETS.forEach(oldName => {
+    try {
+      const oldSheet = ss.getSheetByName(oldName);
+      if (oldSheet && ss.getSheets().length > 1) {
+        ss.deleteSheet(oldSheet);
+      }
+    } catch (e) {}
+  });
+
+  reorderAllSheetsToMatchMenu(ss);
   return true;
 }
 
-/**
- * Apply clean styles to header row
- */
+function reorderAllSheetsToMatchMenu(ss) {
+  try {
+    ORDERED_SHEET_NAMES.forEach((name, idx) => {
+      const sheet = ss.getSheetByName(name);
+      if (sheet) {
+        ss.setActiveSheet(sheet);
+        ss.moveActiveSheet(idx + 1);
+      }
+    });
+    const dash = ss.getSheetByName(SHEETS.DASHBOARD);
+    if (dash) ss.setActiveSheet(dash);
+  } catch (e) {}
+}
+
 function applyHeaderStyle(sheet, colCount) {
   const headerRange = sheet.getRange(1, 1, 1, colCount);
   headerRange.setBackground(THEME.HEADER_BG)
@@ -496,246 +562,373 @@ function applyHeaderStyle(sheet, colCount) {
   sheet.setFrozenRows(1);
 }
 
-/**
- * 2. Write Dashboard Summary Sheet with Real Formulas
- */
 function writeDashboardSheet(ss, data) {
   let sheet = ss.getSheetByName(SHEETS.DASHBOARD);
   if (!sheet) sheet = ss.insertSheet(SHEETS.DASHBOARD);
   sheet.clear();
 
-  const headers = ['বিষয় / মেট্রিক', 'বর্তমান মান', 'বিবরণ ও হিসাব সূত্র', 'স্থিতি'];
+  const headers = ['বিষয় / মেট্রিক (স্লাইড মেনু ও জমা-খরচ সামারি)', 'বর্তমান মান', 'বিবরণ ও হিসাব সূত্র', 'স্থিতি'];
   sheet.appendRow(headers);
   applyHeaderStyle(sheet, headers.length);
 
-  const biz = data.business || {};
-  const today = getDhakaDateOnly();
+  const biz = (data && data.business) ? data.business : {};
 
   const rows = [
-    ['🏪 প্রতিষ্ঠানের নাম', biz.name || 'হিসাব পাতি ERP', 'আপনার ব্যবসার নাম', 'সক্রিয়'],
-    ['📍 ঠিকানা ও মোবাইল', \`\${biz.address || ''} | \${biz.phone || ''}\`, 'যোগাযোগ বিবরণ', 'ভেরিফাইড'],
+    ['🏪 প্রতিষ্ঠানের নাম', biz.name || 'হিসাব পাতি ERP', 'আপনার শপের নাম (শপ আইডি: ' + (biz.id || 'main-business') + ')', 'সক্রিয়'],
+    ['📍 ঠিকানা ও মোবাইল', \`\${biz.address || ''} | \${biz.phone || ''}\`, 'যোগাযোগের বিবরণ', 'ভেরিফাইড'],
     ['🕒 সর্বশেষ সিঙ্কের সময়', formatDhakaDateTime(new Date()), 'সরাসরি হিসাবপাতি অ্যাপ থেকে সিঙ্ক হয়েছে', 'আপ-টু-ডেট'],
-    ['------------------------------', '------------------------------', '------------------------------', '----------'],
-    ['💰 সর্বমোট বিক্রয় (Life-Time)', \`='\${SHEETS.SALES}'!I:I\`, \`'\${SHEETS.SALES}' এর মোট প্রদেয় বিক্রির যোগফল\`, 'স্বয়ংক্রিয়'],
-    ['💵 মোট নগদ আদায় (Paid Total)', \`='\${SHEETS.SALES}'!J:J\`, \`'\${SHEETS.SALES}' এর নগদ আদায়কৃত টাকা\`, 'স্বয়ংক্রিয়'],
-    ['🔴 মোট কাস্টমার বকেয়া (Due)', \`='\${SHEETS.CUSTOMERS}'!E:E\`, \`'\${SHEETS.CUSTOMERS}' কাস্টমারদের কাছে মোট পাওনা\`, 'তাগাদা দিন'],
-    ['📦 সর্বমোট পন্যের সংখ্যা', \`='\${SHEETS.PRODUCTS}'!B:B\`, \`'\${SHEETS.PRODUCTS}' মোট সক্রিয় আইটেম\`, 'ইনভেন্টরি'],
-    ['⚠️ কম স্টকের পন্যের সংখ্যা', \`=COUNTIF('\${SHEETS.PRODUCTS}'!L:L, "স্টক শেষ") + COUNTIF('\${SHEETS.PRODUCTS}'!L:L, "কম স্টক")\`, 'যেসব পণ্যের স্টক ফুরিয়ে যাচ্ছে', 'রি-অর্ডার প্রয়োজন'],
-    ['💸 মোট খরচের পরিমাণ', \`='\${SHEETS.EXPENSES}'!D:D\`, \`'\${SHEETS.EXPENSES}' এর মোট খরচের যোগফল\`, 'হিসাবভুক্ত'],
-    ['🏭 সরবরাহকারীর কাছে দেনা', \`='\${SHEETS.SUPPLIERS}'!F:F\`, \`'\${SHEETS.SUPPLIERS}' সাপ্লায়ারদের কাছে আমাদের বাকি\`, 'পরিশোধযোগ্য'],
-    ['------------------------------', '------------------------------', '------------------------------', '----------'],
-    ['💡 অ্যাপ বন্ধ থাকলেও পরামর্শ', 'গুগল শিট থেকে সরাসরি প্রিন্ট ও হিসাব করুন', 'উপরের মেনু থেকে "হিসাবপাতি ERP" ক্লিক করুন', 'রেডি']
+    ['==============================', '====================', '==============================', '=========='],
+    ['💰 মোট বিক্রয় আয় (জমা - চূড়ান্ত মেমো)', \`=SUMIF('\${SHEETS.SALES}'!O2:O, "চূড়ান্ত মেমো", '\${SHEETS.SALES}'!I2:I)\`, \`'\${SHEETS.SALES}' শিটের সকল চূড়ান্ত বিলের যোগফল\`, 'মোট আয়'],
+    ['💵 মোট নগদ আদায় (Paid Cash In)', \`=SUMIF('\${SHEETS.SALES}'!O2:O, "চূড়ান্ত মেমো", '\${SHEETS.SALES}'!J2:J)\`, \`'\${SHEETS.SALES}' শিটের নগদ আদায়কৃত টাকা\`, 'ক্যাশ ইন'],
+    ['💸 মোট ব্যয় / খরচ (Expenses Out)', \`=SUM('\${SHEETS.EXPENSES}'!D2:D)\`, \`'\${SHEETS.EXPENSES}' শিটের সকল খরচের যোগফল\`, 'ক্যাশ আউট'],
+    ['🏦 নিট ব্যালেন্স (মোট আয় - মোট ব্যয়)', \`=SUMIF('\${SHEETS.SALES}'!O2:O, "চূড়ান্ত মেমো", '\${SHEETS.SALES}'!I2:I) - SUM('\${SHEETS.EXPENSES}'!D2:D)\`, 'হিসাব ট্যাবের নিট ব্যালেন্স (মোট বিক্রয় আয় বিয়োগ মোট খরচ)', 'হিসাব-নিকাশ'],
+    ['💼 নগদ ক্যাশ উদ্বৃত্ত (নগদ জমা - খরচ)', \`=SUMIF('\${SHEETS.SALES}'!O2:O, "চূড়ান্ত মেমো", '\${SHEETS.SALES}'!J2:J) - SUM('\${SHEETS.EXPENSES}'!D2:D)\`, 'হাতে থাকা নগদ ক্যাশ (আদায়কৃত টাকা বিয়োগ খরচ)', 'ক্যাশবুক'],
+    ['==============================', '====================', '==============================', '=========='],
+    ['🔴 মোট পাওনা বকেয়া (বকেয়া পরিমাণ)', \`=SUM('\${SHEETS.CUSTOMERS}'!E2:E)\`, \`'\${SHEETS.CUSTOMERS}' শিটের কাস্টমারদের কাছে মোট পাওনা বকেয়া\`, 'বকেয়া আদায়যোগ্য'],
+    ['🟢 মোট ক্রেতা পাবে (অ্যাডভান্স জমা)', \`=SUM('\${SHEETS.CUSTOMERS}'!F2:F)\`, \`'\${SHEETS.CUSTOMERS}' শিটের ক্রেতাদের অতিরিক্ত অ্যাডভান্স জমা\`, 'ক্রেতা পাবে'],
+    ['🏭 সরবরাহকারীর কাছে দেনা (সাপ্লায়ার)', \`=SUM('\${SHEETS.SUPPLIERS}'!F2:F)\`, \`'\${SHEETS.SUPPLIERS}' শিটের মহাজন/সাপ্লায়ারদের প্রদেয় টাকা\`, 'পরিশোধযোগ্য'],
+    ['==============================', '====================', '==============================', '=========='],
+    ['📦 সর্বমোট পণ্যের সংখ্যা', \`=COUNTA('\${SHEETS.PRODUCTS}'!B2:B)\`, \`'\${SHEETS.PRODUCTS}' শিটের মোট পণ্য তালিকা\`, 'ইনভেন্টরি'],
+    ['⚠️ কম স্টক ও স্টক শেষ পণ্যের সংখ্যা', \`=COUNTIF('\${SHEETS.PRODUCTS}'!L2:L, "স্টক শেষ") + COUNTIF('\${SHEETS.PRODUCTS}'!L2:L, "কম স্টক")\`, 'অন্যান্য পণ্য বাদে যেসব পণ্যের স্টক কম বা শেষ', 'রি-অর্ডার প্রয়োজন'],
+    ['⏳ অপেক্ষমান বিক্রয় অর্ডার', \`=COUNTIF('\${SHEETS.APPROVALS}'!L2:L, "অপেক্ষমান (Pending)")\`, \`'\${SHEETS.APPROVALS}' শিটে সেলসম্যানের পেন্ডিং বিক্রয় অর্ডার\`, 'অ্যাডমিন অনুমোদন']
   ];
-
-  // Adjust formulas to standard Google Sheets SUM notation
-  rows[4][1] = \`=SUM('\${SHEETS.SALES}'!I2:I)\`;
-  rows[5][1] = \`=SUM('\${SHEETS.SALES}'!J2:J)\`;
-  rows[6][1] = \`=SUM('\${SHEETS.CUSTOMERS}'!E2:E)\`;
-  rows[7][1] = \`=COUNTA('\${SHEETS.PRODUCTS}'!B2:B)\`;
-  rows[9][1] = \`=SUM('\${SHEETS.EXPENSES}'!D2:D)\`;
-  rows[10][1] = \`=SUM('\${SHEETS.SUPPLIERS}'!F2:F)\`;
 
   rows.forEach(r => sheet.appendRow(r));
 
-  // Style key metrics
-  sheet.setColumnWidth(1, 240);
-  sheet.setColumnWidth(2, 220);
-  sheet.setColumnWidth(3, 300);
+  sheet.setColumnWidth(1, 270);
+  sheet.setColumnWidth(2, 200);
+  sheet.setColumnWidth(3, 310);
   sheet.setColumnWidth(4, 160);
 
-  // Format currency cells
-  sheet.getRange('B5:B7').setNumberFormat('৳ #,##0.00').setFontWeight('bold');
-  sheet.getRange('B10:B11').setNumberFormat('৳ #,##0.00').setFontWeight('bold');
+  sheet.getRange('B6:B10').setNumberFormat('৳ #,##0.00').setFontWeight('bold');
+  sheet.getRange('B12:B14').setNumberFormat('৳ #,##0.00').setFontWeight('bold');
 }
 
-/**
- * 3. Write Products Sheet
- */
 function writeProductsSheet(ss, products) {
   let sheet = ss.getSheetByName(SHEETS.PRODUCTS);
   if (!sheet) sheet = ss.insertSheet(SHEETS.PRODUCTS);
   sheet.clear();
 
-  const headers = ['আইডি (ID)', 'পণ্যের নাম', 'বাংলা নাম', 'SKU', 'বারকোড', 'ক্যাটাগরি', 'ক্রয়মূল্য (৳)', 'বিক্রয়মূল্য (৳)', 'বর্তমান স্টক', 'সর্বনিম্ন স্টক', 'একক', 'স্টকের অবস্থা'];
+  const headers = ['আইডি (ID)', 'পণ্যের নাম', 'বাংলা নাম', 'SKU', 'বারকোড', 'ক্যাটাগরি', 'ক্রয়মূল্য (৳)', 'বিক্রয়মূল্য (৳)', 'বর্তমান স্টক', 'সর্বনিম্ন স্টক', 'একক', 'স্টকের অবস্থা', 'পণ্যের ধরন', 'মেয়াদ উত্তীর্ণের তারিখ'];
   sheet.appendRow(headers);
   applyHeaderStyle(sheet, headers.length);
 
   if (!products || products.length === 0) return;
 
   const rows = products.map(p => {
-    const stock = Number(p.stock) || 0;
-    const minStock = Number(p.minStock) || 5;
+    const isOther = isOtherProductItem(p);
+    const stock = isOther ? 0 : (Number(p.stock) || 0);
+    const minStock = isOther ? 0 : (Number(p.minStock) || 5);
     let status = 'পর্যাপ্ত স্টক';
-    if (stock <= 0) status = 'স্টক শেষ';
-    else if (stock <= minStock) status = 'কম স্টক';
+    if (isOther) {
+      status = 'স্টক প্রযোজ্য নয় (ইচ্ছেমতো মূল্য)';
+    } else if (stock <= 0) {
+      status = 'স্টক শেষ';
+    } else if (stock <= minStock) {
+      status = 'কম স্টক';
+    }
 
     const barcodeVal = p.barcode || (Array.isArray(p.barcodes) ? p.barcodes.join(', ') : '');
 
     return [
       p.id || '',
       p.name || '',
-      p.bnName || '',
+      p.bnName || p.name || '',
       p.sku || '',
       barcodeVal,
-      p.categoryId || 'সাধারণ',
+      p.categoryId || (isOther ? 'অন্যান্য' : 'সাধারণ'),
       Number(p.purchasePrice) || 0,
       Number(p.salePrice) || 0,
       stock,
       minStock,
       p.unit || 'পিস',
-      status
+      status,
+      isOther ? 'অন্যান্য (কাস্টম মূল্য)' : 'সাধারণ পণ্য',
+      p.expiryDate || ''
     ];
   });
 
   const range = sheet.getRange(2, 1, rows.length, headers.length);
   range.setValues(rows);
 
-  // Format columns
-  sheet.getRange(2, 7, rows.length, 2).setNumberFormat('৳ #,##0.00'); // Purchase & Sale price
-  sheet.getRange(2, 9, rows.length, 2).setNumberFormat('#,##0'); // Stocks
+  sheet.getRange(2, 7, rows.length, 2).setNumberFormat('৳ #,##0.00');
+  sheet.getRange(2, 9, rows.length, 2).setNumberFormat('#,##0');
 }
 
-/**
- * 4. Write Sales & Invoices Sheet
- */
 function writeSalesSheet(ss, sales) {
   let sheet = ss.getSheetByName(SHEETS.SALES);
   if (!sheet) sheet = ss.insertSheet(SHEETS.SALES);
   sheet.clear();
 
-  const headers = ['মেমো নং (Invoice)', 'তারিখ ও সময় (ঢাকা)', 'ক্রেতার নাম', 'মোবাইল', 'পণ্যের বিবরণ', 'মোট টাকা (৳)', 'ছাড় (৳)', 'ভ্যাট (৳)', 'প্রদেয় বিল (৳)', 'নগদ জমা (৳)', 'বাকি টাকা (৳)', 'পেমেন্ট মাধ্যম', 'বিক্রয়কর্মী', 'র কালেকশন JSON'];
+  const headers = ['মেমো নং (Invoice)', 'তারিখ ও সময় (ঢাকা)', 'ক্রেতার নাম', 'মোবাইল', 'পণ্যের বিবরণ', 'মোট টাকা (৳)', 'ছাড় (৳)', 'ভ্যাট (৳)', 'প্রদেয় বিল (৳)', 'নগদ জমা (৳)', 'বকেয়া পরিমাণ (৳)', 'ক্রেতা পাবে / অ্যাডভান্স (৳)', 'নিট ব্যালেন্স (৳)', 'পেমেন্ট মাধ্যম', 'মেমোর অবস্থা', 'বিক্রয়কর্মী', 'ক্রেতার আইডি', 'বিক্রয় আইডি', 'র কালেকশন JSON'];
   sheet.appendRow(headers);
   applyHeaderStyle(sheet, headers.length);
 
   if (!sales || sales.length === 0) return;
 
-  const rows = sales.map(s => {
-    let itemsSummary = '';
-    if (Array.isArray(s.items)) {
-      itemsSummary = s.items.map(it => \`\${it.name || 'পণ্য'} (\${it.quantity || 1} পিস x \${it.unitPrice || 0}৳)\`).join('; ');
+  const rows = sales.map(s => buildSaleRowValues(s));
+  const range = sheet.getRange(2, 1, rows.length, headers.length);
+  range.setValues(rows);
+
+  sheet.getRange(2, 6, rows.length, 8).setNumberFormat('৳ #,##0.00');
+}
+
+function buildSaleRowValues(s) {
+  let itemsSummary = '';
+  if (Array.isArray(s.items)) {
+    itemsSummary = s.items.map(it => \`\${it.name || 'পণ্য'} (\${it.quantity || 1} x \${it.unitPrice || 0}৳)\`).join('; ');
+  }
+
+  const payMethodName = s.paymentMethod === 'mobile_pay' ? 'বিকাশ/নগদ' : (s.paymentMethod === 'card' ? 'কার্ড' : 'নগদ ক্যাশ');
+  const payable = Number(s.payableAmount ?? s.totalAmount) || 0;
+  const paid = Number(s.paidAmount) || 0;
+  const netDue = s.dueAmount !== undefined && s.dueAmount !== null && !isNaN(Number(s.dueAmount))
+    ? Number(s.dueAmount)
+    : (payable - paid);
+  const duePositive = netDue > 0 ? netDue : 0;
+  const advancePositive = netDue < 0 ? Math.abs(netDue) : 0;
+
+  let memoStatus = 'চূড়ান্ত মেমো';
+  if (s.approvalStatus === 'rejected') {
+    memoStatus = 'বাতিলকৃত (Rejected)';
+  } else if (s.isTemporary || s.approvalStatus === 'pending' || String(s.invoiceNo || '').indexOf('TMP-') === 0) {
+    memoStatus = 'TEMPORARY (অনুমোদনের অপেক্ষায়)';
+  }
+
+  return [
+    s.invoiceNo || s.id || '',
+    formatDhakaDateTime(s.createdAt),
+    s.customerName || 'ক্রেতা',
+    s.customerPhone || '',
+    itemsSummary,
+    Number(s.totalAmount) || payable,
+    Number(s.discount) || 0,
+    Number(s.vat) || 0,
+    payable,
+    paid,
+    duePositive,
+    advancePositive,
+    netDue,
+    payMethodName,
+    memoStatus,
+    s.userName || s.userId || 'এডমিন',
+    s.customerId || '',
+    s.id || s.invoiceNo || '',
+    JSON.stringify(s.items || [])
+  ];
+}
+
+function writeApprovalsSheet(ss, approvals) {
+  let sheet = ss.getSheetByName(SHEETS.APPROVALS);
+  if (!sheet) {
+    const legacySheet = ss.getSheetByName('অনুমোদন রিকুয়েস্ট');
+    if (legacySheet) {
+      legacySheet.setName(SHEETS.APPROVALS);
+      sheet = legacySheet;
+    } else {
+      sheet = ss.insertSheet(SHEETS.APPROVALS);
     }
+  }
+  sheet.clear();
 
-    const payMethodName = s.paymentMethod === 'mobile_pay' ? 'বিকাশ/নগদ' : (s.paymentMethod === 'card' ? 'কার্ড' : 'নগদ ক্যাশ');
+  const headers = ['রিকুয়েস্ট আইডি', 'তারিখ ও সময় (ঢাকা)', 'রিকুয়েস্টের ধরন', 'টেম্পোরারি ভাউচার/মেমো', 'চূড়ান্ত মেমো নং', 'সেলসম্যানের নাম', 'ক্রেতার নাম', 'ক্রেতার মোবাইল', 'মোট বিল / জমার পরিমাণ (৳)', 'নগদ জমা (৳)', 'বকেয়া / ব্যালেন্স (৳)', 'বর্তমান স্ট্যাটাস', 'সিদ্ধান্ত গ্রহণকারী', 'সিদ্ধান্তের সময়', 'বিস্তারিত JSON'];
+  sheet.appendRow(headers);
+  applyHeaderStyle(sheet, headers.length);
 
+  if (!approvals || approvals.length === 0) return;
+
+  const rows = approvals.map(req => buildApprovalRowValues(req));
+  const range = sheet.getRange(2, 1, rows.length, headers.length);
+  range.setValues(rows);
+
+  sheet.getRange(2, 9, rows.length, 3).setNumberFormat('৳ #,##0.00');
+}
+
+function buildApprovalRowValues(req) {
+  const isSale = req.type === 'sale';
+  const typeLabel = isSale ? 'বিক্রয় অর্ডার (POS)' : 'বকেয়া / জমা অর্ডার';
+  const sData = req.saleData || {};
+  const pData = req.paymentData || {};
+
+  const custName = isSale ? (sData.customerName || 'ক্রেতা') : (pData.customerName || 'ক্রেতা');
+  const custPhone = isSale ? (sData.customerPhone || '') : (pData.customerPhone || '');
+  const totalOrAmt = isSale ? (Number(sData.payableAmount ?? sData.totalAmount) || 0) : (Number(pData.amount) || 0);
+  const paidAmt = isSale ? (Number(sData.paidAmount) || 0) : (Number(pData.amount) || 0);
+  const dueOrBal = isSale ? (Number(sData.dueAmount) || 0) : ((Number(pData.currentDueBefore) || 0) - (Number(pData.amount) || 0));
+
+  let statusLabel = 'অপেক্ষমান (Pending)';
+  if (req.status === 'approved') statusLabel = 'অনুমোদিত (Approved)';
+  else if (req.status === 'rejected') statusLabel = 'বাতিলকৃত (Rejected)';
+
+  return [
+    req.id || '',
+    formatDhakaDateTime(req.createdAt),
+    typeLabel,
+    req.temporaryInvoiceNo || '',
+    req.finalInvoiceNo || '-',
+    req.userName || 'সেলসম্যান',
+    custName,
+    custPhone,
+    totalOrAmt,
+    paidAmt,
+    dueOrBal,
+    statusLabel,
+    req.reviewedBy || '-',
+    req.reviewedAt ? formatDhakaDateTime(req.reviewedAt) : '-',
+    JSON.stringify(req)
+  ];
+}
+
+function writeCustomersSheet(ss, customers) {
+  let sheet = ss.getSheetByName(SHEETS.CUSTOMERS);
+  if (!sheet) sheet = ss.insertSheet(SHEETS.CUSTOMERS);
+  sheet.clear();
+
+  const headers = ['ক্রেতার আইডি', 'ক্রেতার নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'বকেয়া পরিমাণ (৳)', 'ক্রেতা পাবে / অ্যাডভান্স (৳)', 'নিট ব্যালেন্স (৳)', 'হিসাবের অবস্থা', 'সর্বমোট কেনাকাটা (৳)', 'ইউজার আইডি (CreatedBy)', 'নিবন্ধন তারিখ'];
+  sheet.appendRow(headers);
+  applyHeaderStyle(sheet, headers.length);
+
+  if (!customers || customers.length === 0) return;
+
+  const rows = customers.map(c => buildCustomerRowValues(c));
+  const range = sheet.getRange(2, 1, rows.length, headers.length);
+  range.setValues(rows);
+
+  sheet.getRange(2, 5, rows.length, 3).setNumberFormat('৳ #,##0.00');
+  sheet.getRange(2, 9, rows.length, 1).setNumberFormat('৳ #,##0.00');
+}
+
+function buildCustomerRowValues(c) {
+  const bal = Number(c.dueAmount) || 0;
+  const dueAmt = bal > 0 ? bal : 0;
+  const advanceAmt = bal < 0 ? Math.abs(bal) : 0;
+  const statusText = bal < 0 ? 'ক্রেতা পাবে' : (bal > 0 ? 'বকেয়া পরিমাণ' : 'পরিশোধিত');
+
+  return [
+    c.id || '',
+    c.name || 'ক্রেতা',
+    c.phone || '',
+    c.address || '',
+    dueAmt,
+    advanceAmt,
+    bal,
+    statusText,
+    Number(c.totalSpent) || 0,
+    c.createdBy || 'admin-1',
+    formatDhakaDateOnly(c.createdAt)
+  ];
+}
+
+function writeDuesSheet(ss, customers) {
+  let sheet = ss.getSheetByName(SHEETS.DUES);
+  if (!sheet) sheet = ss.insertSheet(SHEETS.DUES);
+  sheet.clear();
+
+  const headers = ['ক্রমিক', 'ক্রেতার আইডি', 'ক্রেতার নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'বকেয়া পরিমাণ (৳)', 'ক্রেতা পাবে / অ্যাডভান্স (৳)', 'নিট ব্যালেন্স (৳)', 'মোট ক্রয় (৳)', 'হিসাবের অবস্থা', 'তাগাদা স্ট্যাটাস'];
+  sheet.appendRow(headers);
+  applyHeaderStyle(sheet, headers.length);
+
+  const activeCustomers = (customers || [])
+    .filter(c => (Number(c.dueAmount) || 0) !== 0)
+    .sort((a, b) => Math.abs(Number(b.dueAmount) || 0) - Math.abs(Number(a.dueAmount) || 0));
+
+  if (activeCustomers.length === 0) {
+    sheet.appendRow([1, '-', 'কোনো গ্রাহকের বকেয়া বা অ্যাডভান্স নেই (আলহামদুলিল্লাহ)', '-', '-', 0, 0, 0, 0, 'পরিশোধিত', 'কোনো তাগাদা প্রয়োজন নেই']);
+    return;
+  }
+
+  const rows = activeCustomers.map((c, idx) => {
+    const bal = Number(c.dueAmount) || 0;
+    const isAdvance = bal < 0;
     return [
-      s.invoiceNo || s.id || '',
-      formatDhakaDateTime(s.createdAt),
-      s.customerName || 'সাধারণ ক্রেতা',
-      s.customerPhone || '',
-      itemsSummary,
-      Number(s.totalAmount) || 0,
-      Number(s.discount) || 0,
-      Number(s.vat) || 0,
-      Number(s.payableAmount || s.totalAmount) || 0,
-      Number(s.paidAmount) || 0,
-      Number(s.dueAmount) || 0,
-      payMethodName,
-      s.userName || s.userId || 'এডমিন',
-      JSON.stringify(s.items || [])
+      idx + 1,
+      c.id || '',
+      c.name || 'ক্রেতা',
+      c.phone || '',
+      c.address || '',
+      bal > 0 ? bal : 0,
+      isAdvance ? Math.abs(bal) : 0,
+      bal,
+      Number(c.totalSpent) || 0,
+      isAdvance ? 'ক্রেতা পাবে' : 'বকেয়া পরিমাণ',
+      isAdvance ? 'ক্রেতার অতিরিক্ত অ্যাডভান্স জমা আছে' : 'বকেয়া পরিশোধের তাগাদা দিন'
     ];
   });
 
   const range = sheet.getRange(2, 1, rows.length, headers.length);
   range.setValues(rows);
 
-  // Format monetary amounts
-  sheet.getRange(2, 6, rows.length, 6).setNumberFormat('৳ #,##0.00');
-}
+  sheet.getRange(2, 6, rows.length, 4).setNumberFormat('৳ #,##0.00');
 
-/**
- * 5. Write Customers Sheet
- */
-function writeCustomersSheet(ss, customers) {
-  let sheet = ss.getSheetByName(SHEETS.CUSTOMERS);
-  if (!sheet) sheet = ss.insertSheet(SHEETS.CUSTOMERS);
-  sheet.clear();
-
-  const headers = ['ক্রেতার আইডি', 'ক্রেতার নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'বর্তমান মোট বকেয়া (৳)', 'সর্বমোট কেনাকাটা (৳)', 'নিবন্ধন তারিখ'];
-  sheet.appendRow(headers);
-  applyHeaderStyle(sheet, headers.length);
-
-  if (!customers || customers.length === 0) return;
-
-  const rows = customers.map(c => [
-    c.id || '',
-    c.name || 'ক্রেতা',
-    c.phone || '',
-    c.address || '',
-    Number(c.dueAmount) || 0,
-    Number(c.totalSpent) || 0,
-    formatDhakaDateOnly(c.createdAt)
-  ]);
-
-  const range = sheet.getRange(2, 1, rows.length, headers.length);
-  range.setValues(rows);
-
-  sheet.getRange(2, 5, rows.length, 2).setNumberFormat('৳ #,##0.00');
-}
-
-/**
- * 6. Write Dedicated Dues Sheet (বাকি খাতা)
- */
-function writeDuesSheet(ss, customers) {
-  let sheet = ss.getSheetByName(SHEETS.DUES);
-  if (!sheet) sheet = ss.insertSheet(SHEETS.DUES);
-  sheet.clear();
-
-  const headers = ['ক্রমিক', 'ক্রেতার নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'বর্তমান বকেয়া টাকা (৳)', 'মোট ক্রয় (৳)', 'বকেয়ার অবস্থা', 'তাগাদা স্ট্যাটাস'];
-  sheet.appendRow(headers);
-  applyHeaderStyle(sheet, headers.length);
-
-  const dueCustomers = (customers || [])
-    .filter(c => (Number(c.dueAmount) || 0) > 0)
-    .sort((a, b) => (Number(b.dueAmount) || 0) - (Number(a.dueAmount) || 0));
-
-  if (dueCustomers.length === 0) {
-    sheet.appendRow([1, 'কোনো গ্রাহকের বকেয়া নেই (আলহামদুলিল্লাহ)', '-', '-', 0, 0, 'পরিশোধিত', 'কোনো তাগাদা প্রয়োজন নেই']);
-    return;
+  for (let i = 0; i < activeCustomers.length; i++) {
+    const bal = Number(activeCustomers[i].dueAmount) || 0;
+    const rowIdx = i + 2;
+    if (bal < 0) {
+      sheet.getRange(rowIdx, 7, 1, 1).setBackground(THEME.SUCCESS_BG).setFontColor(THEME.SUCCESS_FG).setFontWeight('bold');
+      sheet.getRange(rowIdx, 10, 1, 1).setBackground(THEME.SUCCESS_BG).setFontColor(THEME.SUCCESS_FG).setFontWeight('bold');
+    } else if (bal > 0) {
+      sheet.getRange(rowIdx, 6, 1, 1).setBackground(THEME.DUE_BG).setFontColor(THEME.DUE_FG).setFontWeight('bold');
+      sheet.getRange(rowIdx, 10, 1, 1).setBackground(THEME.DUE_BG).setFontColor(THEME.DUE_FG).setFontWeight('bold');
+    }
   }
-
-  const rows = dueCustomers.map((c, idx) => [
-    idx + 1,
-    c.name || 'ক্রেতা',
-    c.phone || '',
-    c.address || '',
-    Number(c.dueAmount) || 0,
-    Number(c.totalSpent) || 0,
-    'বকেয়া রয়েছে',
-    'জরুরি তাগাদা দিন'
-  ]);
-
-  const range = sheet.getRange(2, 1, rows.length, headers.length);
-  range.setValues(rows);
-
-  sheet.getRange(2, 5, rows.length, 2).setNumberFormat('৳ #,##0.00');
-  
-  // Highlight Dues column with light red
-  sheet.getRange(2, 5, rows.length, 1).setBackground(THEME.DUE_BG).setFontColor(THEME.DUE_FG).setFontWeight('bold');
 }
 
-/**
- * 7. Write Suppliers Sheet
- */
+function refreshDuesFromCustomersSheet(ss) {
+  try {
+    const cSheet = ss.getSheetByName(SHEETS.CUSTOMERS);
+    if (!cSheet || cSheet.getLastRow() <= 1) {
+      writeDuesSheet(ss, []);
+      return;
+    }
+    const cRows = cSheet.getRange(2, 1, cSheet.getLastRow() - 1, cSheet.getLastColumn()).getValues();
+    const customers = cRows.map(r => {
+      const hasExtendedCols = r.length >= 9;
+      let netDue = 0;
+      if (hasExtendedCols) {
+        const dueCol = Number(r[4]) || 0;
+        const advCol = Number(r[5]) || 0;
+        const netCol = Number(r[6]);
+        netDue = !isNaN(netCol) && netCol !== 0 ? netCol : (advCol > 0 ? -advCol : dueCol);
+      } else {
+        netDue = Number(r[4]) || 0;
+      }
+      return {
+        id: String(r[0] || ''),
+        name: String(r[1] || 'ক্রেতা'),
+        phone: String(r[2] || ''),
+        address: String(r[3] || ''),
+        dueAmount: netDue,
+        totalSpent: Number(hasExtendedCols ? r[8] : r[5]) || 0
+      };
+    });
+    writeDuesSheet(ss, customers);
+  } catch (e) {}
+}
+
 function writeSuppliersSheet(ss, suppliers) {
   let sheet = ss.getSheetByName(SHEETS.SUPPLIERS);
   if (!sheet) sheet = ss.insertSheet(SHEETS.SUPPLIERS);
   sheet.clear();
 
-  const headers = ['সরবরাহকারী আইডি', 'নাম', 'কোম্পানির নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'আমাদের বর্তমান দেনা (৳)', 'সর্বশেষ তারিখ'];
+  const headers = ['সরবরাহকারী আইডি', 'নাম', 'কোম্পানির নাম', 'মোবাইল নম্বর', 'ঠিকানা', 'আমাদের বর্তমান দেনা (৳)', 'দেনার অবস্থা', 'সর্বশেষ তারিখ'];
   sheet.appendRow(headers);
   applyHeaderStyle(sheet, headers.length);
 
   if (!suppliers || suppliers.length === 0) return;
 
-  const rows = suppliers.map(s => [
-    s.id || '',
-    s.name || 'সরবরাহকারী',
-    s.company || '',
-    s.phone || '',
-    s.address || '',
-    Number(s.dueAmount) || 0,
-    formatDhakaDateOnly(s.createdAt)
-  ]);
+  const rows = suppliers.map(s => {
+    const due = Number(s.dueAmount) || 0;
+    return [
+      s.id || '',
+      s.name || 'সরবরাহকারী',
+      s.company || '',
+      s.phone || '',
+      s.address || '',
+      due,
+      due > 0 ? 'দেনা আছে (পরিশোধযোগ্য)' : 'পরিশোধিত',
+      formatDhakaDateOnly(s.createdAt)
+    ];
+  });
 
   const range = sheet.getRange(2, 1, rows.length, headers.length);
   range.setValues(rows);
@@ -743,15 +936,12 @@ function writeSuppliersSheet(ss, suppliers) {
   sheet.getRange(2, 6, rows.length, 1).setNumberFormat('৳ #,##0.00');
 }
 
-/**
- * 8. Write Expenses Sheet
- */
 function writeExpensesSheet(ss, expenses) {
   let sheet = ss.getSheetByName(SHEETS.EXPENSES);
   if (!sheet) sheet = ss.insertSheet(SHEETS.EXPENSES);
   sheet.clear();
 
-  const headers = ['খরচ আইডি', 'তারিখ (ঢাকা সময়)', 'খরচের খাত', 'টাকার পরিমাণ (৳)', 'বিবরণ / নোট', 'খরচকারী'];
+  const headers = ['খরচ আইডি', 'তারিখ (ঢাকা সময়)', 'খরচের খাত (Category)', 'টাকার পরিমাণ (৳)', 'বিবরণ / নোট', 'এন্ট্রিকারী (ইউজার)', 'হিসাবের ধরন', 'ইউজার আইডি'];
   sheet.appendRow(headers);
   applyHeaderStyle(sheet, headers.length);
 
@@ -759,11 +949,13 @@ function writeExpensesSheet(ss, expenses) {
 
   const rows = expenses.map(e => [
     e.id || '',
-    formatDhakaDateTime(e.date),
+    formatDhakaDateOnly(e.date),
     e.category || 'সাধারণ খরচ',
     Number(e.amount) || 0,
     e.note || e.description || '',
-    e.userName || e.userId || 'এডমিন'
+    e.userName || e.userId || 'এডমিন',
+    'ব্যয় / খরচ (Expense)',
+    e.userId || '1'
   ]);
 
   const range = sheet.getRange(2, 1, rows.length, headers.length);
@@ -772,15 +964,35 @@ function writeExpensesSheet(ss, expenses) {
   sheet.getRange(2, 4, rows.length, 1).setNumberFormat('৳ #,##0.00');
 }
 
-/**
- * 9. Write Users Sheet
- */
+function writeSMSSheet(ss, smsLogs) {
+  let sheet = ss.getSheetByName(SHEETS.SMS);
+  if (!sheet) sheet = ss.insertSheet(SHEETS.SMS);
+  sheet.clear();
+
+  const headers = ['এসএমএস আইডি', 'তারিখ ও সময় (ঢাকা)', 'প্রাপকের মোবাইল নম্বর', 'বার্তা (Message)', 'স্ট্যাটাস'];
+  sheet.appendRow(headers);
+  applyHeaderStyle(sheet, headers.length);
+
+  if (!smsLogs || smsLogs.length === 0) return;
+
+  const rows = smsLogs.map(log => [
+    log.id || '',
+    formatDhakaDateTime(log.createdAt),
+    log.recipient || '',
+    log.message || '',
+    log.status === 'sent' ? 'প্রেরিত (Sent)' : (log.status || 'Sent')
+  ]);
+
+  const range = sheet.getRange(2, 1, rows.length, headers.length);
+  range.setValues(rows);
+}
+
 function writeUsersSheet(ss, users) {
   let sheet = ss.getSheetByName(SHEETS.USERS);
   if (!sheet) sheet = ss.insertSheet(SHEETS.USERS);
   sheet.clear();
 
-  const headers = ['ইউজার আইডি', 'নাম', 'ইমেইল', 'মোবাইল', 'পদবী / রোল', 'অনুমতিসমূহ', 'সর্বশেষ সক্রিয়', 'পাসওয়ার্ড'];
+  const headers = ['ইউজার আইডি', 'নাম', 'ইমেইল', 'মোবাইল', 'পদবী / রোল', 'শপ আইডি (Business ID)', 'অনুমতিসমূহ', 'সর্বশেষ সক্রিয়'];
   sheet.appendRow(headers);
   applyHeaderStyle(sheet, headers.length);
 
@@ -796,9 +1008,9 @@ function writeUsersSheet(ss, users) {
       u.email || '',
       u.phone || '',
       roleText,
+      u.businessId || 'main-business',
       perms,
-      formatDhakaDateTime(u.lastSeen),
-      u.password || '123456'
+      formatDhakaDateTime(u.lastSeen)
     ];
   });
 
@@ -806,9 +1018,6 @@ function writeUsersSheet(ss, users) {
   range.setValues(rows);
 }
 
-/**
- * 9.5 Write Categories Sheet
- */
 function writeCategoriesSheet(ss, categories) {
   let sheet = ss.getSheetByName(SHEETS.CATEGORIES);
   if (!sheet) sheet = ss.insertSheet(SHEETS.CATEGORIES);
@@ -830,10 +1039,7 @@ function writeCategoriesSheet(ss, categories) {
   range.setValues(rows);
 }
 
-/**
- * 10. Write Settings Sheet
- */
-function writeSettingsSheet(ss, biz) {
+function writeSettingsSheet(ss, biz, smsConfig) {
   let sheet = ss.getSheetByName(SHEETS.SETTINGS);
   if (!sheet) sheet = ss.insertSheet(SHEETS.SETTINGS);
   sheet.clear();
@@ -847,9 +1053,12 @@ function writeSettingsSheet(ss, biz) {
     ['name', biz.name || 'হিসাব পাতি ERP', 'প্রতিষ্ঠানের নাম'],
     ['address', biz.address || 'ঢাকা, বাংলাদেশ', 'দোকানের ঠিকানা'],
     ['phone', biz.phone || '01700000000', 'দোকানের ফোন নম্বর'],
-    ['currency', biz.currency || 'BDT', 'মুদ্রা'],
+    ['currency', biz.currency || '৳', 'মুদ্রা'],
     ['default_printer', biz.defaultPrinter || 'thermal', 'ডিফল্ট প্রিন্টার টাইপ (thermal / a4)'],
-    ['sync_engine', 'Google Apps Script Web App', 'গুগল শিট লাইভ ডাটাবেজ ইঞ্জিন'],
+    ['theme', biz.theme || 'light', 'অ্যাপ থিম'],
+    ['sms_sender_id', (smsConfig && smsConfig.senderId) || '', 'এসএমএস সেন্ডার আইডি'],
+    ['sms_auto', (smsConfig && smsConfig.autoSMS) ? 'true' : 'false', 'অটো এসএমএস স্ট্যাটাস'],
+    ['sync_engine', 'Google Apps Script Multi-Shop Engine v3.0', 'গুগল শিট লাইভ ডাটাবেজ ইঞ্জিন'],
     ['sync_updated_at', formatDhakaDateTime(new Date()), 'সর্বশেষ সিঙ্কের তারিখ ও সময়']
   ];
 
@@ -857,15 +1066,14 @@ function writeSettingsSheet(ss, biz) {
   range.setValues(rows);
 }
 
-/**
- * Real-time Single Entity Handlers
- */
 function syncSingleProduct(ss, product, operation) {
-  const sheet = ss.getSheetByName(SHEETS.PRODUCTS);
+  let sheet = ss.getSheetByName(SHEETS.PRODUCTS);
   if (!sheet) {
-    initializeAllSheets();
-    return;
+    initializeAllSheets(ss);
+    sheet = ss.getSheetByName(SHEETS.PRODUCTS);
   }
+  if (!product) return;
+
   const data = sheet.getDataRange().getValues();
   let foundRow = -1;
   for (let i = 1; i < data.length; i++) {
@@ -880,24 +1088,27 @@ function syncSingleProduct(ss, product, operation) {
     return;
   }
 
-  const stock = Number(product.stock) || 0;
-  const minStock = Number(product.minStock) || 5;
-  let status = stock <= 0 ? 'স্টক শেষ' : (stock <= minStock ? 'কম স্টক' : 'পর্যাপ্ত স্টক');
+  const isOther = isOtherProductItem(product);
+  const stock = isOther ? 0 : (Number(product.stock) || 0);
+  const minStock = isOther ? 0 : (Number(product.minStock) || 5);
+  let status = isOther ? 'স্টক প্রযোজ্য নয় (ইচ্ছেমতো মূল্য)' : (stock <= 0 ? 'স্টক শেষ' : (stock <= minStock ? 'কম স্টক' : 'পর্যাপ্ত স্টক'));
   const barcodeVal = product.barcode || (Array.isArray(product.barcodes) ? product.barcodes.join(', ') : '');
 
   const rowValues = [
     product.id || '',
     product.name || '',
-    product.bnName || '',
+    product.bnName || product.name || '',
     product.sku || '',
     barcodeVal,
-    product.categoryId || 'সাধারণ',
+    product.categoryId || (isOther ? 'অন্যান্য' : 'সাধারণ'),
     Number(product.purchasePrice) || 0,
     Number(product.salePrice) || 0,
     stock,
     minStock,
     product.unit || 'পিস',
-    status
+    status,
+    isOther ? 'অন্যান্য (কাস্টম মূল্য)' : 'সাধারণ পণ্য',
+    product.expiryDate || ''
   ];
 
   if (foundRow !== -1) {
@@ -916,10 +1127,11 @@ function syncSingleSale(ss, sale, operation) {
   if (!sale) return;
 
   const invKey = String(sale.invoiceNo || sale.id || '');
+  const idKey = String(sale.id || '');
   const sData = salesSheet.getDataRange().getValues();
   let foundRow = -1;
   for (let i = 1; i < sData.length; i++) {
-    if (String(sData[i][0]) === invKey) {
+    if (String(sData[i][0]) === invKey || (idKey && String(sData[i][17]) === idKey)) {
       foundRow = i + 1;
       break;
     }
@@ -930,28 +1142,7 @@ function syncSingleSale(ss, sale, operation) {
     return;
   }
 
-  let itemsSummary = '';
-  if (Array.isArray(sale.items)) {
-    itemsSummary = sale.items.map(it => \`\${it.name || 'পণ্য'} (\${it.quantity || 1} পিস x \${it.unitPrice || 0}৳)\`).join('; ');
-  }
-
-  const payMethodName = sale.paymentMethod === 'mobile_pay' ? 'বিকাশ/নগদ' : (sale.paymentMethod === 'card' ? 'কার্ড' : 'নগদ ক্যাশ');
-
-  const rowValues = [
-    invKey,
-    formatDhakaDateTime(sale.createdAt || new Date()),
-    sale.customerName || 'সাধারণ ক্রেতা',
-    sale.customerPhone || '',
-    itemsSummary,
-    Number(sale.totalAmount) || 0,
-    Number(sale.discount) || 0,
-    Number(sale.vat) || 0,
-    Number(sale.payableAmount || sale.totalAmount) || 0,
-    Number(sale.paidAmount) || 0,
-    Number(sale.dueAmount) || 0,
-    payMethodName,
-    sale.userName || sale.userId || 'এডমিন'
-  ];
+  const rowValues = buildSaleRowValues(sale);
 
   if (foundRow !== -1) {
     salesSheet.getRange(foundRow, 1, 1, rowValues.length).setValues([rowValues]);
@@ -959,15 +1150,16 @@ function syncSingleSale(ss, sale, operation) {
     salesSheet.appendRow(rowValues);
   }
 
-  // Also decrement stock in Products sheet ONLY for confirmed (non-temporary) sales
-  if (!sale.isTemporary && Array.isArray(sale.items)) {
+  if (!sale.isTemporary && sale.approvalStatus !== 'pending' && Array.isArray(sale.items) && foundRow === -1) {
     const prodSheet = ss.getSheetByName(SHEETS.PRODUCTS);
     if (prodSheet) {
       const pData = prodSheet.getDataRange().getValues();
       sale.items.forEach(item => {
+        if (isOtherProductItem(item)) return;
         const pId = item.productId || item.id;
         for (let i = 1; i < pData.length; i++) {
           if (String(pData[i][0]) === String(pId)) {
+            if (String(pData[i][12] || '').indexOf('অন্যান্য') !== -1) break;
             const curStock = Number(pData[i][8]) || 0;
             const newStock = Math.max(0, curStock - (Number(item.quantity) || 1));
             prodSheet.getRange(i + 1, 9).setValue(newStock);
@@ -982,9 +1174,44 @@ function syncSingleSale(ss, sale, operation) {
   }
 }
 
+function syncSingleApproval(ss, req, operation) {
+  let sheet = ss.getSheetByName(SHEETS.APPROVALS);
+  if (!sheet) {
+    initializeAllSheets(ss);
+    sheet = ss.getSheetByName(SHEETS.APPROVALS);
+  }
+  if (!req) return;
+
+  const data = sheet.getDataRange().getValues();
+  let foundRow = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(req.id)) {
+      foundRow = i + 1;
+      break;
+    }
+  }
+
+  if (operation === 'delete') {
+    if (foundRow !== -1) sheet.deleteRow(foundRow);
+    return;
+  }
+
+  const rowValues = buildApprovalRowValues(req);
+  if (foundRow !== -1) {
+    sheet.getRange(foundRow, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sheet.appendRow(rowValues);
+  }
+}
+
 function syncSingleCustomer(ss, customer, operation) {
-  const sheet = ss.getSheetByName(SHEETS.CUSTOMERS);
-  if (!sheet) return;
+  let sheet = ss.getSheetByName(SHEETS.CUSTOMERS);
+  if (!sheet) {
+    initializeAllSheets(ss);
+    sheet = ss.getSheetByName(SHEETS.CUSTOMERS);
+  }
+  if (!customer) return;
+
   const data = sheet.getDataRange().getValues();
   let foundRow = -1;
   for (let i = 1; i < data.length; i++) {
@@ -996,29 +1223,29 @@ function syncSingleCustomer(ss, customer, operation) {
 
   if (operation === 'delete') {
     if (foundRow !== -1) sheet.deleteRow(foundRow);
+    refreshDuesFromCustomersSheet(ss);
     return;
   }
 
-  const rowValues = [
-    customer.id || '',
-    customer.name || 'ক্রেতা',
-    customer.phone || '',
-    customer.address || '',
-    Number(customer.dueAmount) || 0,
-    Number(customer.totalSpent) || 0,
-    formatDhakaDateOnly(customer.createdAt || new Date())
-  ];
+  const rowValues = buildCustomerRowValues(customer);
 
   if (foundRow !== -1) {
     sheet.getRange(foundRow, 1, 1, rowValues.length).setValues([rowValues]);
   } else {
     sheet.appendRow(rowValues);
   }
+
+  refreshDuesFromCustomersSheet(ss);
 }
 
 function syncSingleSupplier(ss, supplier, operation) {
-  const sheet = ss.getSheetByName(SHEETS.SUPPLIERS);
-  if (!sheet) return;
+  let sheet = ss.getSheetByName(SHEETS.SUPPLIERS);
+  if (!sheet) {
+    initializeAllSheets(ss);
+    sheet = ss.getSheetByName(SHEETS.SUPPLIERS);
+  }
+  if (!supplier) return;
+
   const data = sheet.getDataRange().getValues();
   let foundRow = -1;
   for (let i = 1; i < data.length; i++) {
@@ -1033,13 +1260,15 @@ function syncSingleSupplier(ss, supplier, operation) {
     return;
   }
 
+  const due = Number(supplier.dueAmount) || 0;
   const rowValues = [
     supplier.id || '',
     supplier.name || 'সরবরাহকারী',
     supplier.company || '',
     supplier.phone || '',
     supplier.address || '',
-    Number(supplier.dueAmount) || 0,
+    due,
+    due > 0 ? 'দেনা আছে (পরিশোধযোগ্য)' : 'পরিশোধিত',
     formatDhakaDateOnly(supplier.createdAt || new Date())
   ];
 
@@ -1052,7 +1281,10 @@ function syncSingleSupplier(ss, supplier, operation) {
 
 function syncSingleExpense(ss, expense, operation) {
   let sheet = ss.getSheetByName(SHEETS.EXPENSES);
-  if (!sheet) return;
+  if (!sheet) {
+    initializeAllSheets(ss);
+    sheet = ss.getSheetByName(SHEETS.EXPENSES);
+  }
   if (!expense) return;
 
   const data = sheet.getDataRange().getValues();
@@ -1071,11 +1303,13 @@ function syncSingleExpense(ss, expense, operation) {
 
   const rowValues = [
     expense.id || '',
-    formatDhakaDateTime(expense.date || new Date()),
+    formatDhakaDateOnly(expense.date || new Date()),
     expense.category || 'সাধারণ খরচ',
     Number(expense.amount) || 0,
     expense.note || expense.description || '',
-    expense.userName || expense.userId || 'এডমিন'
+    expense.userName || expense.userId || 'এডমিন',
+    'ব্যয় / খরচ (Expense)',
+    expense.userId || '1'
   ];
 
   if (foundRow !== -1) {
@@ -1085,9 +1319,32 @@ function syncSingleExpense(ss, expense, operation) {
   }
 }
 
+function syncSingleSMS(ss, smsLog, operation) {
+  let sheet = ss.getSheetByName(SHEETS.SMS);
+  if (!sheet) {
+    initializeAllSheets(ss);
+    sheet = ss.getSheetByName(SHEETS.SMS);
+  }
+  if (!smsLog) return;
+
+  if (operation === 'delete') return;
+
+  const rowValues = [
+    smsLog.id || \`sms_\${Date.now()}\`,
+    formatDhakaDateTime(smsLog.createdAt || new Date()),
+    smsLog.recipient || '',
+    smsLog.message || '',
+    smsLog.status === 'sent' ? 'প্রেরিত (Sent)' : (smsLog.status || 'Sent')
+  ];
+  sheet.appendRow(rowValues);
+}
+
 function syncSingleUser(ss, user, operation) {
   let sheet = ss.getSheetByName(SHEETS.USERS);
-  if (!sheet) return;
+  if (!sheet) {
+    initializeAllSheets(ss);
+    sheet = ss.getSheetByName(SHEETS.USERS);
+  }
   if (!user) return;
 
   const data = sheet.getDataRange().getValues();
@@ -1112,9 +1369,9 @@ function syncSingleUser(ss, user, operation) {
     user.email || '',
     user.phone || '',
     roleText,
+    user.businessId || 'main-business',
     perms,
-    formatDhakaDateTime(user.lastSeen || new Date()),
-    user.password || '123456'
+    formatDhakaDateTime(user.lastSeen || new Date())
   ];
 
   if (foundRow !== -1) {
@@ -1126,7 +1383,10 @@ function syncSingleUser(ss, user, operation) {
 
 function syncSingleCategory(ss, category, operation) {
   let sheet = ss.getSheetByName(SHEETS.CATEGORIES);
-  if (!sheet) return;
+  if (!sheet) {
+    initializeAllSheets(ss);
+    sheet = ss.getSheetByName(SHEETS.CATEGORIES);
+  }
   if (!category) return;
 
   const data = sheet.getDataRange().getValues();
@@ -1164,24 +1424,33 @@ function syncCustomerPayment(ss, payload) {
   const data = cSheet.getDataRange().getValues();
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]) === String(customerId)) {
-      const currentDue = Number(data[i][4]) || 0;
-      const currentSpent = Number(data[i][5]) || 0;
-      const newDue = currentDue - (Number(amount) || 0);
-      const newSpent = currentSpent + (Number(amount) || 0);
+      const hasExtended = data[i].length >= 9;
+      const currentNetDue = hasExtended ? (Number(data[i][6]) || 0) : (Number(data[i][4]) || 0);
+      const currentSpent = hasExtended ? (Number(data[i][8]) || 0) : (Number(data[i][5]) || 0);
+      const newNetDue = currentNetDue - (Number(amount) || 0);
 
-      cSheet.getRange(i + 1, 5).setValue(newDue);
-      cSheet.getRange(i + 1, 6).setValue(newSpent);
+      const updatedCustomer = {
+        id: data[i][0],
+        name: data[i][1],
+        phone: data[i][2],
+        address: data[i][3],
+        dueAmount: newNetDue,
+        totalSpent: currentSpent,
+        createdBy: hasExtended ? (data[i][9] || 'admin-1') : 'admin-1',
+        createdAt: hasExtended ? data[i][10] : data[i][6]
+      };
+      const rowValues = buildCustomerRowValues(updatedCustomer);
+      cSheet.getRange(i + 1, 1, 1, rowValues.length).setValues([rowValues]);
       break;
     }
   }
+
+  refreshDuesFromCustomersSheet(ss);
 }
 
-/**
- * Read all data from Google Sheet tabs to restore into HishabPati ERP app
- */
 function readAllSpreadsheetData(ss) {
   const result = {
-    version: '2.5-SHEETS',
+    version: '3.0-SHEETS',
     timestamp: new Date().toISOString(),
     source: 'Google Sheets Live Database',
     business: {},
@@ -1189,8 +1458,10 @@ function readAllSpreadsheetData(ss) {
     products: [],
     customers: [],
     sales: [],
+    approvalRequests: [],
     suppliers: [],
     expenses: [],
+    smsLogs: [],
     users: []
   };
 
@@ -1209,33 +1480,64 @@ function readAllSpreadsheetData(ss) {
   const pSheet = ss.getSheetByName(SHEETS.PRODUCTS);
   if (pSheet && pSheet.getLastRow() > 1) {
     const pRows = pSheet.getRange(2, 1, pSheet.getLastRow() - 1, pSheet.getLastColumn()).getValues();
-    result.products = pRows.map(r => ({
-      id: String(r[0] || \`prod_\${Date.now()}\`),
-      name: String(r[1] || ''),
-      bnName: String(r[2] || ''),
-      sku: String(r[3] || ''),
-      barcode: String(r[4] || ''),
-      categoryId: String(r[5] || 'general'),
-      purchasePrice: Number(r[6]) || 0,
-      salePrice: Number(r[7]) || 0,
-      stock: Number(r[8]) || 0,
-      minStock: Number(r[9]) || 5,
-      unit: String(r[10] || 'পিস')
-    }));
+    result.products = pRows.map(r => {
+      const name = String(r[1] || '');
+      const bnName = String(r[2] || '');
+      const typeCol = String(r[12] || '');
+      const statusCol = String(r[11] || '');
+      const isCustomPrice =
+        typeCol.indexOf('অন্যান্য') !== -1 ||
+        statusCol.indexOf('প্রযোজ্য নয়') !== -1 ||
+        name.trim() === 'অন্যান্য' ||
+        name.trim() === 'অন্যন্য' ||
+        bnName.trim() === 'অন্যান্য' ||
+        bnName.trim() === 'অন্যন্য';
+
+      return {
+        id: String(r[0] || \`prod_\${Date.now()}\`),
+        name: name,
+        bnName: bnName || name,
+        sku: String(r[3] || ''),
+        barcode: String(r[4] || ''),
+        categoryId: String(r[5] || (isCustomPrice ? 'অন্যান্য' : 'general')),
+        purchasePrice: Number(r[6]) || 0,
+        salePrice: Number(r[7]) || 0,
+        stock: isCustomPrice ? 0 : (Number(r[8]) || 0),
+        minStock: isCustomPrice ? 0 : (Number(r[9]) || 5),
+        unit: String(r[10] || 'পিস'),
+        isCustomPrice: isCustomPrice,
+        expiryDate: r[13] ? String(r[13]) : undefined
+      };
+    });
   }
 
   // Customers
   const cSheet = ss.getSheetByName(SHEETS.CUSTOMERS);
   if (cSheet && cSheet.getLastRow() > 1) {
     const cRows = cSheet.getRange(2, 1, cSheet.getLastRow() - 1, cSheet.getLastColumn()).getValues();
-    result.customers = cRows.map(r => ({
-      id: String(r[0] || \`cust_\${Date.now()}\`),
-      name: String(r[1] || 'ক্রেতা'),
-      phone: String(r[2] || ''),
-      address: String(r[3] || ''),
-      dueAmount: Number(r[4]) || 0,
-      totalSpent: Number(r[5]) || 0
-    }));
+    result.customers = cRows.map(r => {
+      const isNewFormat = r.length >= 9;
+      let netDue = 0;
+      if (isNewFormat) {
+        const dueCol = Number(r[4]) || 0;
+        const advCol = Number(r[5]) || 0;
+        const netCol = Number(r[6]);
+        netDue = !isNaN(netCol) && netCol !== 0 ? netCol : (advCol > 0 ? -advCol : dueCol);
+      } else {
+        netDue = Number(r[4]) || 0;
+      }
+
+      return {
+        id: String(r[0] || \`cust_\${Date.now()}\`),
+        name: String(r[1] || 'ক্রেতা'),
+        phone: String(r[2] || ''),
+        address: String(r[3] || ''),
+        dueAmount: netDue,
+        totalSpent: Number(isNewFormat ? r[8] : r[5]) || 0,
+        createdBy: isNewFormat ? String(r[9] || 'admin-1') : 'admin-1',
+        createdAt: String((isNewFormat ? r[10] : r[6]) || new Date().toISOString())
+      };
+    });
   }
 
   // Sales
@@ -1243,10 +1545,12 @@ function readAllSpreadsheetData(ss) {
   if (sSheet && sSheet.getLastRow() > 1) {
     const sRows = sSheet.getRange(2, 1, sSheet.getLastRow() - 1, sSheet.getLastColumn()).getValues();
     result.sales = sRows.map((r, i) => {
+      const isNewSaleFormat = r.length >= 18;
+      const jsonColIdx = isNewSaleFormat ? 18 : 13;
       let items = [];
-      if (r[13]) {
+      if (r[jsonColIdx]) {
         try {
-          items = JSON.parse(String(r[13]));
+          items = JSON.parse(String(r[jsonColIdx]));
         } catch (e) {
           items = [];
         }
@@ -1263,21 +1567,53 @@ function readAllSpreadsheetData(ss) {
         }
       }
 
+      const netDue = isNewSaleFormat
+        ? (Number(r[12]) || ((Number(r[11]) || 0) > 0 ? -Number(r[11]) : (Number(r[10]) || 0)))
+        : (Number(r[10]) || 0);
+      const payMethodRaw = String(isNewSaleFormat ? r[13] : r[11]);
+      const statusRaw = isNewSaleFormat ? String(r[14] || '') : '';
+      const isTemporary = statusRaw.indexOf('TEMPORARY') !== -1 || String(r[0] || '').indexOf('TMP-') === 0;
+
       return {
-        id: \`sale_\${i + 1}\`,
+        id: String((isNewSaleFormat && r[17]) ? r[17] : \`sale_\${i + 1}\`),
         invoiceNo: String(r[0] || \`INV-\${1000 + i}\`),
         createdAt: String(r[1] || new Date().toISOString()),
         customerName: String(r[2] || ''),
         customerPhone: String(r[3] || ''),
+        customerId: isNewSaleFormat ? String(r[16] || '') : '',
         totalAmount: Number(r[5]) || 0,
         discount: Number(r[6]) || 0,
         vat: Number(r[7]) || 0,
         payableAmount: Number(r[8]) || 0,
         paidAmount: Number(r[9]) || 0,
-        dueAmount: Number(r[10]) || 0,
-        paymentMethod: r[11] === 'বিকাশ/নগদ' ? 'mobile_pay' : (r[11] === 'কার্ড' ? 'card' : 'cash'),
-        userName: String(r[12] || 'এডমিন'),
+        dueAmount: netDue,
+        paymentMethod: payMethodRaw === 'বিকাশ/নগদ' ? 'mobile_pay' : (payMethodRaw === 'কার্ড' ? 'card' : 'cash'),
+        isTemporary: isTemporary,
+        approvalStatus: statusRaw.indexOf('বাতিল') !== -1 ? 'rejected' : (isTemporary ? 'pending' : 'approved'),
+        userName: String((isNewSaleFormat ? r[15] : r[12]) || 'এডমিন'),
         items: items
+      };
+    });
+  }
+
+  // Sales Orders (বিক্রয় অর্ডার) with legacy fallback
+  const appSheet = ss.getSheetByName(SHEETS.APPROVALS) || ss.getSheetByName('অনুমোদন রিকুয়েস্ট');
+  if (appSheet && appSheet.getLastRow() > 1) {
+    const aRows = appSheet.getRange(2, 1, appSheet.getLastRow() - 1, appSheet.getLastColumn()).getValues();
+    result.approvalRequests = aRows.map(r => {
+      if (r[14]) {
+        try {
+          return JSON.parse(String(r[14]));
+        } catch (e) {}
+      }
+      return {
+        id: String(r[0] || \`req_\${Date.now()}\`),
+        createdAt: String(r[1] || new Date().toISOString()),
+        type: String(r[2] || '').indexOf('বকেয়া') !== -1 ? 'due_payment' : 'sale',
+        temporaryInvoiceNo: String(r[3] || ''),
+        finalInvoiceNo: String(r[4] || ''),
+        userName: String(r[5] || 'সেলসম্যান'),
+        status: String(r[11] || '').indexOf('Approved') !== -1 ? 'approved' : (String(r[11] || '').indexOf('Rejected') !== -1 ? 'rejected' : 'pending')
       };
     });
   }
@@ -1306,7 +1642,21 @@ function readAllSpreadsheetData(ss) {
       category: String(r[2] || 'সাধারণ খরচ'),
       amount: Number(r[3]) || 0,
       note: String(r[4] || ''),
-      userName: String(r[5] || 'এডমিন')
+      userName: String(r[5] || 'এডমিন'),
+      userId: String(r[7] || '1')
+    }));
+  }
+
+  // SMS Logs
+  const smsSheet = ss.getSheetByName(SHEETS.SMS);
+  if (smsSheet && smsSheet.getLastRow() > 1) {
+    const smsRows = smsSheet.getRange(2, 1, smsSheet.getLastRow() - 1, smsSheet.getLastColumn()).getValues();
+    result.smsLogs = smsRows.map((r, i) => ({
+      id: String(r[0] || \`sms_\${i + 1}\`),
+      createdAt: String(r[1] || new Date().toISOString()),
+      recipient: String(r[2] || ''),
+      message: String(r[3] || ''),
+      status: 'sent'
     }));
   }
 
@@ -1315,9 +1665,10 @@ function readAllSpreadsheetData(ss) {
   if (uSheet && uSheet.getLastRow() > 1) {
     const uRows = uSheet.getRange(2, 1, uSheet.getLastRow() - 1, uSheet.getLastColumn()).getValues();
     result.users = uRows.map(r => {
+      const hasBizCol = r.length >= 8;
       const roleRaw = String(r[4] || '').trim();
       const role = (roleRaw === 'অ্যাডমিন' || roleRaw === 'admin') ? 'admin' : ((roleRaw === 'ম্যানেজার' || roleRaw === 'manager') ? 'manager' : 'salesman');
-      const permsRaw = String(r[5] || '');
+      const permsRaw = String(hasBizCol ? r[6] : r[5] || '');
       const permissions = permsRaw ? permsRaw.split(',').map(p => p.trim()) : [];
       return {
         id: String(r[0] || \`user_\${Date.now()}\`),
@@ -1325,14 +1676,14 @@ function readAllSpreadsheetData(ss) {
         email: String(r[2] || ''),
         phone: String(r[3] || ''),
         role: role,
+        businessId: hasBizCol ? String(r[5] || 'main-business') : 'main-business',
         permissions: permissions,
-        lastSeen: String(r[6] || ''),
-        password: String(r[7] || '123456')
+        lastSeen: String((hasBizCol ? r[7] : r[6]) || '')
       };
     });
   }
 
-  // Business
+  // Business Settings
   const setSheet = ss.getSheetByName(SHEETS.SETTINGS);
   if (setSheet && setSheet.getLastRow() > 1) {
     const setRows = setSheet.getRange(2, 1, setSheet.getLastRow() - 1, 2).getValues();
@@ -1345,17 +1696,15 @@ function readAllSpreadsheetData(ss) {
       name: bizObj.name || 'হিসাব পাতি ERP',
       address: bizObj.address || '',
       phone: bizObj.phone || '',
-      currency: bizObj.currency || 'BDT',
-      defaultPrinter: bizObj.default_printer || 'thermal'
+      currency: bizObj.currency || '৳',
+      defaultPrinter: bizObj.default_printer || 'thermal',
+      theme: bizObj.theme || 'light'
     };
   }
 
   return result;
 }
 
-/**
- * Interactive Dialog Prompts for direct Google Sheets use
- */
 function menuAddProductPrompt() {
   const ui = SpreadsheetApp.getUi();
   const nameResp = ui.prompt('নতুন পণ্য যুক্ত করুন', 'পণ্যের নাম লিখুন:', ui.ButtonSet.OK_CANCEL);
@@ -1373,8 +1722,9 @@ function menuAddProductPrompt() {
 
   const newId = 'prod_' + Date.now();
   const name = nameResp.getResponseText();
+  const isOther = isOtherProductItem({ name: name });
   const salePrice = Number(priceResp.getResponseText()) || 0;
-  const stock = Number(stockResp.getResponseText()) || 0;
+  const stock = isOther ? 0 : (Number(stockResp.getResponseText()) || 0);
 
   pSheet.appendRow([
     newId,
@@ -1382,13 +1732,15 @@ function menuAddProductPrompt() {
     name,
     'SKU-' + Date.now().toString().slice(-4),
     '',
-    'সাধারণ',
+    isOther ? 'অন্যান্য' : 'সাধারণ',
     salePrice * 0.7,
     salePrice,
     stock,
-    5,
+    isOther ? 0 : 5,
     'পিস',
-    stock > 5 ? 'পর্যাপ্ত স্টক' : (stock > 0 ? 'কম স্টক' : 'স্টক শেষ')
+    isOther ? 'স্টক প্রযোজ্য নয় (ইচ্ছেমতো মূল্য)' : (stock > 5 ? 'পর্যাপ্ত স্টক' : (stock > 0 ? 'কম স্টক' : 'স্টক শেষ')),
+    isOther ? 'অন্যান্য (কাস্টম মূল্য)' : 'সাধারণ পণ্য',
+    ''
   ]);
 
   ui.alert('সফল!', \`পণ্য "\${name}" গুগল শিটে সফলভাবে যুক্ত করা হয়েছে।\`, ui.ButtonSet.OK);
@@ -1412,31 +1764,29 @@ function menuAddSalePrompt() {
   const custName = custResp.getResponseText();
   const total = Number(billResp.getResponseText()) || 0;
   const paid = Number(paidResp.getResponseText()) || 0;
-  const due = Math.max(0, total - paid);
+  const netDue = total - paid;
   const invNo = 'INV-' + (sSheet.getLastRow() + 1000);
 
-  sSheet.appendRow([
-    invNo,
-    formatDhakaDateTime(new Date()),
-    custName,
-    '',
-    'সরাসরি গুগল শিট থেকে বিক্রয় এন্ট্রি',
-    total,
-    0,
-    0,
-    total,
-    paid,
-    due,
-    'নগদ ক্যাশ',
-    'গুগল শিট এডমিন'
-  ]);
+  sSheet.appendRow(buildSaleRowValues({
+    id: 'sale_' + Date.now(),
+    invoiceNo: invNo,
+    createdAt: new Date(),
+    customerName: custName,
+    totalAmount: total,
+    payableAmount: total,
+    paidAmount: paid,
+    dueAmount: netDue,
+    paymentMethod: 'cash',
+    userName: 'গুগল শিট এডমিন',
+    items: [{ name: 'সরাসরি গুগল শিট মেমো', quantity: 1, unitPrice: total }]
+  }));
 
-  ui.alert('মেমো সফলভাবে এন্ট্রি হয়েছে!', \`ইনভয়েস: \${invNo}\\nক্রেতা: \${custName}\\nমোট: \${total}৳\\nজমা: \${paid}৳\\nবাকি: \${due}৳\`, ui.ButtonSet.OK);
+  ui.alert('মেমো সফলভাবে এন্ট্রি হয়েছে!', \`ইনভয়েস: \${invNo}\\nক্রেতা: \${custName}\\nমোট: \${total}৳\\nজমা: \${paid}৳\\nব্যালেন্স: \${netDue}৳\`, ui.ButtonSet.OK);
 }
 
 function menuRecordDuePaymentPrompt() {
   const ui = SpreadsheetApp.getUi();
-  const phoneResp = ui.prompt('বকেয়া টাকা জমা', 'ক্রেতার মোবাইল নম্বর বা নাম লিখুন:', ui.ButtonSet.OK_CANCEL);
+  const phoneResp = ui.prompt('বকেয়া / অ্যাডভান্স টাকা জমা', 'ক্রেতার মোবাইল নম্বর বা নাম লিখুন:', ui.ButtonSet.OK_CANCEL);
   if (phoneResp.getSelectedButton() !== ui.Button.OK) return;
 
   const amtResp = ui.prompt('জমা পরিমাণ', 'জমা টাকার পরিমাণ (৳) লিখুন:', ui.ButtonSet.OK_CANCEL);
@@ -1455,11 +1805,9 @@ function menuRecordDuePaymentPrompt() {
     const name = String(data[i][1]).toLowerCase();
     const phone = String(data[i][2]);
     if (name.includes(search) || phone.includes(search)) {
-      const curDue = Number(data[i][4]) || 0;
-      const newDue = Math.max(0, curDue - amount);
-      cSheet.getRange(i + 1, 5).setValue(newDue);
+      syncCustomerPayment(ss, { customerId: data[i][0], amount: amount });
       found = true;
-      ui.alert('জমা সফল!', \`গ্রাহক: \${data[i][1]}\\nআগের বকেয়া: \${curDue}৳\\nজমা: \${amount}৳\\nনতুন বকেয়া: \${newDue}৳\`, ui.ButtonSet.OK);
+      ui.alert('জমা সফল!', \`গ্রাহক: \${data[i][1]} এর পেমেন্ট ৳\${amount} জমা হয়েছে এবং বকেয়া খাতা আপডেট করা হয়েছে।\`, ui.ButtonSet.OK);
       break;
     }
   }
@@ -1481,9 +1829,6 @@ function menuExportJson() {
   SpreadsheetApp.getUi().showModalDialog(htmlOutput, 'অ্যাপ ব্যাকআপ JSON');
 }
 
-/**
- * Date / Time Utilities (Dhaka Timezone Asia/Dhaka)
- */
 function formatDhakaDateTime(date) {
   if (!date) return '';
   try {
@@ -1511,3 +1856,6 @@ function jsonResponse(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 `;
+
+export const GOOGLE_APPS_SCRIPT_CODE = GAS_SCRIPT_CODE;
+

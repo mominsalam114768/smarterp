@@ -58,12 +58,11 @@ export function POS({ user }: POSProps) {
   const canAddSale = isAdmin || user?.permissions?.includes('add_sale');
 
   useEffect(() => {
-    // Initial fetch
+    // Initial fetch (strictly scoped to active shop via currentBusinessId)
     api.getProducts().then(items => { setProducts(items); setFilteredProducts(items); });
     api.getCategories().then(setCategories);
     api.getCustomers().then(items => {
-      const filtered = isAdmin ? items : items.filter(c => c.createdBy === user?.id);
-      setCustomers(filtered);
+      setCustomers(items);
     });
 
     // Real-time subscriptions
@@ -73,8 +72,7 @@ export function POS({ user }: POSProps) {
     });
     const unsubCat = api.subscribeCategories(setCategories);
     const unsubCust = api.subscribeCustomers(items => {
-      const filtered = isAdmin ? items : items.filter(c => c.createdBy === user?.id);
-      setCustomers(filtered);
+      setCustomers(items);
     });
 
     return () => {
@@ -272,7 +270,10 @@ export function POS({ user }: POSProps) {
   const projectedCustomerBalance = activeCustomerPrevBalance + invoiceBalance;
 
   const handleCheckout = async (forceCustomer?: Customer) => {
-    if (cart.length === 0) return alert("কার্ট খালি!");
+    if (cart.length === 0) {
+      showNotify("কার্ট খালি!", "error");
+      return;
+    }
     
     const customerId = forceCustomer ? forceCustomer.id : selectedCustomerId;
     const selectedCustomer = forceCustomer || customers.find(c => c.id === customerId);
@@ -326,39 +327,15 @@ export function POS({ user }: POSProps) {
     };
 
     try {
-      if (!isAdmin) {
-        // Salesman mode: Generate Temporary Invoice / Approval Request
-        const { sale: createdTempSale } = await api.createSaleRequest(sale);
-        setCart([]);
-        setPaidAmount(0);
-        showNotify("টেম্পোরারি ইনভয়েস তৈরি হয়েছে! এডমিন অনুমোদন করলে এটি চূড়ান্ত হবে ও স্টক কমবে।", "success");
-        await printInvoice(createdTempSale, true);
-      } else {
-        // Admin mode: Instant confirmed Sale
-        const createdSale = await api.createSale(sale);
-        setCart([]);
-        setPaidAmount(0);
-        
-        // Auto-trigger print with a notification
-        showNotify("বিক্রয় সফল হয়েছে! ইনভয়েস প্রিন্ট লেআউট তৈরি হচ্ছে...");
-        await printInvoice(createdSale, false);
-
-        // Auto SMS logic
-        try {
-          const smsConfig = await api.getSMSConfig();
-          if (smsConfig.autoSMS && selectedCustomer && selectedCustomer.phone) {
-            const finalBal = (Number(selectedCustomer.dueAmount) || 0) + createdSale.dueAmount;
-            const balText = finalBal < 0 ? `ক্রেতা পাবে: ৳${Math.round(Math.abs(finalBal))}` : `বকেয়া: ৳${Math.round(finalBal)}`;
-            const message = `প্রিয় ${selectedCustomer.name}, আপনার শপিং এর জন্য ধন্যবাদ। ইনভয়েস: ${createdSale.invoiceNo}, মোট: ৳${Math.round(createdSale.payableAmount)}, পেইড: ৳${createdSale.paidAmount}, ${balText}।`;
-            await api.sendSMS(selectedCustomer.phone, message);
-            console.log("[Auto SMS] Sent to:", selectedCustomer.phone);
-          }
-        } catch (err) {
-          console.error("[Auto SMS] Error:", err);
-        }
-      }
+      // POS Checkout always creates a Sales Order (বিক্রয় অর্ডার) first.
+      // When confirmed in the 'বিক্রয় অর্ডার' tab, it moves to 'বিক্রয় লিস্ট', deducts stock, and updates customer due.
+      const { sale: createdTempSale } = await api.createSaleRequest(sale);
+      setCart([]);
+      setPaidAmount(0);
+      showNotify("বিক্রয় অর্ডার ইনভয়েস তৈরি হয়েছে! 'বিক্রয় অর্ডার' ট্যাব থেকে কনফার্ম করলে এটি বিক্রয় লিস্টে যুক্ত হবে।", "success");
+      await printInvoice(createdTempSale, true);
     } catch (e: any) {
-      alert(e.message || "বিক্রয় ব্যর্থ হয়েছে!");
+      showNotify(e.message || "বিক্রয় অর্ডার তৈরি ব্যর্থ হয়েছে!", "error");
     } finally {
       setIsSubmitting(false);
     }
@@ -833,7 +810,7 @@ export function POS({ user }: POSProps) {
                   ? "পারমিশন নেই" 
                   : (!selectedCustomerId 
                     ? "ক্রেতা নির্বাচন করুন" 
-                    : (!isAdmin ? "টেম্পোরারি ইনভয়েস তৈরি করুন" : "ইনভয়েস সম্পন্ন করুন")
+                    : "বিক্রয় অর্ডার ইনভয়েস করুন"
                   )
                 }
               </>

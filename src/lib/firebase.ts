@@ -1,8 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { 
-  initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  getFirestore,
   doc, 
   getDoc, 
   setDoc, 
@@ -18,15 +16,17 @@ import {
   serverTimestamp,
   limit,
   arrayRemove,
-  arrayUnion
+  arrayUnion,
+  deleteField
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-export const db = initializeFirestore(app, {
-  localCache: persistentLocalCache({tabManager: persistentMultipleTabManager()})
-}, firebaseConfig.firestoreDatabaseId);
+const resolvedDatabaseId =
+  (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
+  'ai-studio-remixhishabpatie-b725f57b-c067-4185-916f-1febb0596d8d';
+export const db = getFirestore(app, resolvedDatabaseId);
 export const auth = getAuth(app);
 
 // Error Handling according to integration rules
@@ -92,5 +92,6 @@ export {
   serverTimestamp,
   limit,
   arrayRemove,
-  arrayUnion
+  arrayUnion,
+  deleteField
 };

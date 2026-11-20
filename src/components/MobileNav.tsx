@@ -29,7 +29,7 @@ export function MobileNav({ activeTab, setActiveTab, user }: MobileNavProps) {
     { id: "dashboard", label: "হোম", icon: LayoutDashboard },
     { id: "pos", label: "পিওএস", icon: ShoppingCart },
     { id: "sales", label: "বিক্রয়", icon: FileText },
-    { id: "approvals", label: "অনুমোদন", icon: ClipboardCheck },
+    { id: "approvals", label: "বিক্রয় অর্ডার", icon: ClipboardCheck },
     { id: "products", label: "পণ্য", icon: Package },
     { id: "customers", label: "ক্রেতা", icon: Users },
     { id: "suppliers", label: "সরবরাহকারী", icon: Truck },

@@ -9,6 +9,7 @@ import dotenv from "dotenv";
 import os from "os";
 import axios from "axios";
 import cron from "node-cron";
+import crypto from "crypto";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import * as XLSX from "xlsx";
@@ -78,7 +79,70 @@ const isCjs = typeof __filename !== "undefined" && typeof __dirname !== "undefin
 const _filename = isCjs ? __filename : fileURLToPath(import.meta.url);
 const _dirname = isCjs ? __dirname : path.dirname(_filename);
 
-const BACKUP_SECRET = "smart-erp-secure-backup-key-@2024";
+const BACKUP_SECRET = process.env.BACKUP_SECRET || crypto.randomBytes(32).toString("hex");
+const AUTH_TOKEN_SECRET = process.env.AUTH_TOKEN_SECRET || crypto.randomBytes(32).toString("hex");
+
+function hashServerPassword(password: string, existingSalt?: string): { passwordHash: string; passwordSalt: string } {
+  const passwordSalt = existingSalt || crypto.randomBytes(16).toString("hex");
+  const passwordHash = crypto.scryptSync(password, passwordSalt, 64).toString("hex");
+  return { passwordHash, passwordSalt };
+}
+
+function constantTimeStringEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function verifyServerPassword(userRecord: any, candidatePassword: string): boolean {
+  if (!userRecord || !candidatePassword) return false;
+  if (userRecord.passwordHash && userRecord.passwordSalt) {
+    const { passwordHash } = hashServerPassword(candidatePassword, String(userRecord.passwordSalt));
+    return constantTimeStringEqual(passwordHash, String(userRecord.passwordHash));
+  }
+  if (typeof userRecord.password === "string" && userRecord.password.length > 0) {
+    return constantTimeStringEqual(userRecord.password, candidatePassword);
+  }
+  return false;
+}
+
+function stripUserSecretFields(user: any): any {
+  if (!user || typeof user !== "object") return user;
+  const { password: _p, passwordHash: _h, passwordSalt: _s, ...safe } = user;
+  return safe;
+}
+
+function signAuthToken(user: any): string {
+  const payload = {
+    sub: String(user.id),
+    email: String(user.email || ""),
+    role: String(user.role || "staff"),
+    businessId: String(user.businessId || "main-business"),
+    isSuperAdmin: Boolean(user.isSuperAdmin || user.id === "admin-1" || user.role === "super_admin"),
+    exp: Date.now() + 24 * 60 * 60 * 1000
+  };
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", AUTH_TOKEN_SECRET).update(encodedPayload).digest("base64url");
+  return `${encodedPayload}.${sig}`;
+}
+
+function verifyAuthToken(token: string): { sub: string; email: string; role: string; businessId: string; isSuperAdmin: boolean; exp: number } | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 2) return null;
+    const [encodedPayload, providedSig] = parts;
+    const expectedSig = crypto.createHmac("sha256", AUTH_TOKEN_SECRET).update(encodedPayload).digest("base64url");
+    if (!constantTimeStringEqual(providedSig, expectedSig)) return null;
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+    if (!payload || !payload.sub || typeof payload.exp !== "number" || Date.now() > payload.exp) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
 
 // Use /tmp for writable state in production (Cloud Run friendly)
 // Note: OS/Tmp is always writable, whereas app root might be read-only after deploy
@@ -367,38 +431,41 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
   // CORS Middleware for Cloudflare Pages and cross-origin requests
+  const allowedOrigins = (process.env.ALLOWED_ORIGIN || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
   app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
+    const origin = req.headers.origin;
+    if (allowedOrigins.length > 0) {
+      if (origin && allowedOrigins.includes(origin)) {
+        res.header("Access-Control-Allow-Origin", origin);
+        res.header("Vary", "Origin");
+      }
+    } else if (origin) {
+      res.header("Access-Control-Allow-Origin", origin);
+      res.header("Vary", "Origin");
+    }
     res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-user-id");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
     if (req.method === "OPTIONS") {
-      res.sendStatus(200);
+      res.sendStatus(204);
       return;
     }
     next();
   });
 
-  // Mock Database File - Defined globally above for Cloud Run compatibility
-  
+  // Local fallback Database State (zero hardcoded credentials; initial Super Admin is created via onboarding)
+  const ADMIN_DEFAULT_PERMISSIONS = [
+    "dashboard", "pos", "sales", "add_sale", "delete_sale",
+    "products", "add_product", "delete_product", "customers",
+    "add_customer", "delete_customer", "suppliers", "accounting",
+    "due", "sms", "reports", "users", "settings"
+  ];
+
   const initialData = {
-    users: [
-      { 
-        id: "admin-1", 
-        name: "মোঃ মমিন আলী", 
-        email: "mominkhan051220@gmail.com", 
-        phone: "01741456838", 
-        password: "Momin1234@", 
-        role: "admin", 
-        permissions: [
-          "dashboard", "pos", "sales", "add_sale", "delete_sale", 
-          "products", "add_product", "delete_product", "customers", 
-          "add_customer", "delete_customer", "suppliers", "accounting", 
-          "due", "sms", "reports", "users", "settings"
-        ],
-        businessId: "main-business",
-        lastSeen: new Date().toISOString() 
-      }
-    ],
+    users: [] as any[],
     products: [
       { id: "p1", name: "Classic Polo Shirt", bnName: "ক্লাসিক পোলো শার্ট", sku: "POLO-001", barcode: "12345678", categoryId: "c1", brandId: "b1", unit: "pcs", purchasePrice: 350, salePrice: 550, stock: 45, minStock: 10 },
       { id: "p2", name: "Denim Jeans", bnName: "ডেনিম জিন্স", sku: "JEAN-002", barcode: "87654321", categoryId: "c2", brandId: "b2", unit: "pcs", purchasePrice: 800, salePrice: 1200, stock: 20, minStock: 5 },
@@ -464,17 +531,7 @@ async function startServer() {
 
       if (!data) data = initialData;
 
-      // Always guarantee default admin exists and is up to date
-      let users = Array.isArray(data.users) && data.users.length > 0 ? data.users : [...initialData.users];
-      const defaultAdminEmail = "mominkhan051220@gmail.com";
-      const adminIndex = users.findIndex((u: any) => (u.email || "").toLowerCase() === defaultAdminEmail.toLowerCase());
-      if (adminIndex === -1) {
-        users.unshift(initialData.users[0]);
-      } else {
-        users[adminIndex].role = "admin";
-        users[adminIndex].password = "Momin1234@";
-        users[adminIndex].permissions = initialData.users[0].permissions;
-      }
+      const users = Array.isArray(data.users) ? data.users : [];
 
       return {
         users,
@@ -502,7 +559,7 @@ async function startServer() {
     }
   };
 
-  // --- API Security & Bypass Protection ---
+  // --- API Security & Authentication Middleware ---
   const PROTECTED_DATA_ROUTES = [
     "/api/users",
     "/api/products",
@@ -513,30 +570,79 @@ async function startServer() {
     "/api/categories",
     "/api/dashboard/stats",
     "/api/reports",
-    "/api/db"
+    "/api/db",
+    "/api/business",
+    "/api/sms",
+    "/api/backup"
   ];
 
   app.use((req, res, next) => {
-    // Auth routes are public
     if (req.path.startsWith("/api/auth")) {
       return next();
     }
     const isProtected = PROTECTED_DATA_ROUTES.some(prefix => req.path.startsWith(prefix));
     if (isProtected) {
-      const authHeader = req.headers.authorization;
-      const adminToken = req.headers["x-admin-token"];
-      const userIdHeader = req.headers["x-user-id"];
-      if (!authHeader && !adminToken && !userIdHeader) {
+      const authHeader = req.headers.authorization || "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+      const payload = token ? verifyAuthToken(token) : null;
+      if (!payload) {
         return res.status(401).json({
-          error: "অননুমোদিত প্রবেশাধিকার। সরাসরি এপিআই ব্যবহার করে প্রবেশ সম্পূর্ণ নিষিদ্ধ।",
+          error: "অননুমোদিত প্রবেশাধিকার। অনুগ্রহ করে পুনরায় লগইন করুন।",
           status: "unauthorized"
         });
       }
+      const db = getDB();
+      const verifiedUser = (db.users || []).find((u: any) => u.id === payload.sub);
+      if (!verifiedUser) {
+        return res.status(401).json({
+          error: "ব্যবহারকারী খুঁজে পাওয়া যায়নি বা সেশন বাতিল হয়েছে।",
+          status: "unauthorized"
+        });
+      }
+      (req as any).authUser = verifiedUser;
     }
     next();
   });
 
   // --- Authentication Routes (Server-Side) ---
+  app.get("/api/auth/setup-status", (_req, res) => {
+    const db = getDB();
+    res.json({ needsInitialSetup: !Array.isArray(db.users) || db.users.length === 0 });
+  });
+
+  app.post("/api/auth/bootstrap-admin", (req, res) => {
+    const db = getDB();
+    if (Array.isArray(db.users) && db.users.length > 0) {
+      return res.status(403).json({ error: "প্রাথমিক সুপার অ্যাডমিন ইতিমধ্যেই তৈরি করা হয়েছে।" });
+    }
+    const name = String(req.body?.name || "").trim();
+    const email = String(req.body?.email || "").toLowerCase().trim();
+    const phone = String(req.body?.phone || "").trim();
+    const password = String(req.body?.password || "").trim();
+    if (!name || !email || password.length < 6) {
+      return res.status(400).json({ error: "নাম, ইমেইল ও কমপক্ষে ৬ অক্ষরের পাসওয়ার্ড প্রদান করুন।" });
+    }
+    const { passwordHash, passwordSalt } = hashServerPassword(password);
+    const adminUser = {
+      id: "admin-1",
+      name,
+      email,
+      phone,
+      passwordHash,
+      passwordSalt,
+      role: "admin",
+      isSuperAdmin: true,
+      permissions: ADMIN_DEFAULT_PERMISSIONS,
+      businessId: "main-business",
+      createdAt: new Date().toISOString(),
+      lastSeen: new Date().toISOString()
+    };
+    db.users = [adminUser];
+    saveDB(db);
+    const token = signAuthToken(adminUser);
+    res.json({ success: true, user: stripUserSecretFields(adminUser), token });
+  });
+
   app.post("/api/auth/login", (req, res) => {
     const db = getDB();
     const { email, password } = req.body;
@@ -547,50 +653,67 @@ async function startServer() {
       return res.status(400).json({ error: "ইমেইল ও পাসওয়ার্ড প্রদান করা আবশ্যক।" });
     }
 
-    const user = (db.users || []).find((u: any) => 
-      (u.email || "").toLowerCase().trim() === emailNorm && 
-      (u.password || "").trim() === pass
+    const user = (db.users || []).find((u: any) =>
+      (u.email || "").toLowerCase().trim() === emailNorm &&
+      verifyServerPassword(u, pass)
     );
 
     if (!user) {
       return res.status(401).json({ error: "ইমেইল বা পাসওয়ার্ড সঠিক নয়!" });
     }
 
-    // Update lastSeen
+    // Upgrade legacy plaintext password to scrypt hash transparently on login
+    if (user.password && !user.passwordHash) {
+      const { passwordHash, passwordSalt } = hashServerPassword(pass);
+      user.passwordHash = passwordHash;
+      user.passwordSalt = passwordSalt;
+      delete user.password;
+    }
+
     user.lastSeen = new Date().toISOString();
     saveDB(db);
 
     res.json({
       success: true,
-      user,
-      token: `token-${user.id}-${Date.now()}`
+      user: stripUserSecretFields(user),
+      token: signAuthToken(user)
     });
   });
 
   app.post("/api/auth/verify", (req, res) => {
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+    const payload = token ? verifyAuthToken(token) : null;
+    if (!payload) {
+      return res.status(401).json({ error: "সেশন অবৈধ অথবা মেয়াদোত্তীর্ণ" });
+    }
     const db = getDB();
-    const { userId, email } = req.body;
-    const emailNorm = (email || "").toLowerCase().trim();
-
-    const user = (db.users || []).find((u: any) => 
-      u.id === userId && 
-      (u.email || "").toLowerCase().trim() === emailNorm
-    );
-
+    const user = (db.users || []).find((u: any) => u.id === payload.sub);
     if (!user) {
       return res.status(401).json({ error: "সেশন অবৈধ অথবা মেয়াদোত্তীর্ণ" });
     }
-
-    res.json({ success: true, user });
+    res.json({ success: true, user: stripUserSecretFields(user) });
   });
 
-  // Database Backup & Restore
+  // Database Backup & Restore (Admin only, secrets stripped from user list)
   app.get("/api/db/all", (req, res) => {
-    res.json(getDB());
+    const authUser = (req as any).authUser;
+    if (!authUser || authUser.role !== "admin") {
+      return res.status(403).json({ error: "শুধুমাত্র অ্যাডমিন সম্পূর্ণ ডাটাবেস এক্সপোর্ট করতে পারেন।" });
+    }
+    const db = getDB();
+    res.json({
+      ...db,
+      users: (db.users || []).map(stripUserSecretFields)
+    });
   });
 
   app.post("/api/db/restore", (req, res) => {
     try {
+      const authUser = (req as any).authUser;
+      if (!authUser || authUser.role !== "admin") {
+        return res.status(403).json({ error: "শুধুমাত্র অ্যাডমিন ডাটাবেস রিস্টোর করতে পারেন।" });
+      }
       const newData = req.body;
       console.log("[Restore] Received restore request. Keys present:", Object.keys(newData));
 
@@ -623,9 +746,9 @@ async function startServer() {
   // Dashboard Stats
   app.get("/api/dashboard/stats", (req, res) => {
     const db = getDB();
-    const reqUserId = req.headers["x-user-id"] as string;
-    const currentUser = (db.users || []).find((u: any) => u.id === reqUserId);
-    const isAdmin = !currentUser || currentUser?.role === 'admin';
+    const currentUser = (req as any).authUser;
+    const reqUserId = currentUser?.id;
+    const isAdmin = currentUser?.role === 'admin';
 
     let sales = db.sales || [];
     let customers = db.customers || [];
@@ -660,9 +783,9 @@ async function startServer() {
   // Analytics Reports with Salesman Isolation
   app.get("/api/reports/sales-by-date", (req, res) => {
     const db = getDB();
-    const reqUserId = req.headers["x-user-id"] as string;
-    const currentUser = (db.users || []).find((u: any) => u.id === reqUserId);
-    const isAdmin = !currentUser || currentUser?.role === 'admin';
+    const currentUser = (req as any).authUser;
+    const reqUserId = currentUser?.id;
+    const isAdmin = currentUser?.role === 'admin';
     const queryUserId = req.query.userId as string;
 
     let sales = db.sales || [];
@@ -688,9 +811,9 @@ async function startServer() {
 
   app.get("/api/reports/expense-by-category", (req, res) => {
     const db = getDB();
-    const reqUserId = req.headers["x-user-id"] as string;
-    const currentUser = (db.users || []).find((u: any) => u.id === reqUserId);
-    const isAdmin = !currentUser || currentUser?.role === 'admin';
+    const currentUser = (req as any).authUser;
+    const reqUserId = currentUser?.id;
+    const isAdmin = currentUser?.role === 'admin';
     const queryUserId = req.query.userId as string;
 
     let expenses = db.expenses || [];
@@ -708,44 +831,89 @@ async function startServer() {
     res.json(Object.entries(expenseByCat).map(([category, amount]) => ({ category, amount })));
   });
 
-  // Users Management & Admin Password Control
+  // Users Management & Admin Password Control (Never leaks password hashes/plaintext)
   app.get("/api/users", (req, res) => {
-    res.json(getDB().users || []);
+    const currentUser = (req as any).authUser;
+    const users = (getDB().users || []).map(stripUserSecretFields);
+    if (currentUser?.role === "admin") {
+      return res.json(users);
+    }
+    res.json(users.filter((u: any) => u.businessId === currentUser?.businessId));
   });
 
   app.post("/api/users", (req, res) => {
+    const currentUser = (req as any).authUser;
+    if (!currentUser || currentUser.role !== "admin") {
+      return res.status(403).json({ error: "শুধুমাত্র অ্যাডমিন নতুন ইউজার তৈরি করতে পারেন।" });
+    }
     const db = getDB();
+    const rawPassword = String(req.body.password || "").trim();
+    if (rawPassword.length < 6) {
+      return res.status(400).json({ error: "পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।" });
+    }
+    const { passwordHash, passwordSalt } = hashServerPassword(rawPassword);
+    const { password: _discarded, ...restBody } = req.body;
     const user = {
-      ...req.body,
+      ...restBody,
       id: req.body.id || ("user-" + Date.now()),
+      passwordHash,
+      passwordSalt,
       permissions: req.body.permissions || ["dashboard", "pos"],
       createdAt: new Date().toISOString(),
     };
     if (!db.users) db.users = [];
     db.users.push(user);
     saveDB(db);
-    res.json(user);
+    res.json(stripUserSecretFields(user));
   });
 
   app.put("/api/users/:id", (req, res) => {
-    const db = getDB();
+    const currentUser = (req as any).authUser;
     const { id } = req.params;
+    if (!currentUser || (currentUser.role !== "admin" && currentUser.id !== id)) {
+      return res.status(403).json({ error: "অননুমোদিত অ্যাক্সেস।" });
+    }
+    const db = getDB();
     const index = (db.users || []).findIndex((u: any) => u.id === id);
     if (index === -1) return res.status(404).json({ error: "User not found" });
-    
-    db.users[index] = { ...db.users[index], ...req.body };
+
+    const { password, role, businessId, isSuperAdmin, ...safeBody } = req.body;
+    const updatedUser: any = { ...db.users[index], ...safeBody };
+
+    if (currentUser.role === "admin") {
+      if (role) updatedUser.role = role;
+      if (businessId) updatedUser.businessId = businessId;
+      if (typeof isSuperAdmin === "boolean" && (currentUser.isSuperAdmin || currentUser.id === "admin-1")) {
+        updatedUser.isSuperAdmin = isSuperAdmin;
+      }
+    }
+
+    if (typeof password === "string" && password.trim().length > 0) {
+      if (password.trim().length < 6) {
+        return res.status(400).json({ error: "পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।" });
+      }
+      const { passwordHash, passwordSalt } = hashServerPassword(password.trim());
+      updatedUser.passwordHash = passwordHash;
+      updatedUser.passwordSalt = passwordSalt;
+      delete updatedUser.password;
+    }
+
+    db.users[index] = updatedUser;
     saveDB(db);
-    res.json(db.users[index]);
+    res.json(stripUserSecretFields(db.users[index]));
   });
 
   app.delete("/api/users/:id", (req, res) => {
+    const currentUser = (req as any).authUser;
+    if (!currentUser || currentUser.role !== "admin") {
+      return res.status(403).json({ error: "শুধুমাত্র অ্যাডমিন ইউজার মুছতে পারেন।" });
+    }
     const db = getDB();
     const { id } = req.params;
     const index = (db.users || []).findIndex((u: any) => u.id === id);
     if (index === -1) return res.status(404).json({ error: "User not found" });
-    
-    // Prevent deleting the main admin
-    if (db.users[index].role === "admin" && db.users.filter((u: any) => u.role === "admin").length <= 1) {
+
+    if (db.users[index].id === "admin-1" || (db.users[index].role === "admin" && db.users.filter((u: any) => u.role === "admin").length <= 1)) {
       return res.status(403).json({ error: "প্রধান এডমিন মোছা সম্ভব নয়" });
     }
 
@@ -757,16 +925,15 @@ async function startServer() {
   // Admin resets password for any user
   app.post("/api/users/:id/reset-password", (req, res) => {
     const db = getDB();
-    const reqUserId = req.headers["x-user-id"] as string;
-    const admin = (db.users || []).find((u: any) => u.id === reqUserId);
-    if (admin && admin.role !== "admin") {
+    const currentUser = (req as any).authUser;
+    if (!currentUser || currentUser.role !== "admin") {
       return res.status(403).json({ error: "শুধুমাত্র অ্যাডমিন পাসওয়ার্ড পরিবর্তন করতে পারেন।" });
     }
 
     const { id } = req.params;
     const { newPassword } = req.body;
-    if (!newPassword || newPassword.trim().length < 4) {
-      return res.status(400).json({ error: "নতুন পাসওয়ার্ড কমপক্ষে ৪ অক্ষরের হতে হবে।" });
+    if (!newPassword || newPassword.trim().length < 6) {
+      return res.status(400).json({ error: "নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।" });
     }
 
     const userIndex = (db.users || []).findIndex((u: any) => u.id === id);
@@ -774,7 +941,10 @@ async function startServer() {
       return res.status(404).json({ error: "ইউজার পাওয়া যায়নি।" });
     }
 
-    db.users[userIndex].password = newPassword.trim();
+    const { passwordHash, passwordSalt } = hashServerPassword(newPassword.trim());
+    db.users[userIndex].passwordHash = passwordHash;
+    db.users[userIndex].passwordSalt = passwordSalt;
+    delete db.users[userIndex].password;
     saveDB(db);
     res.json({ success: true, message: "পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে।" });
   });
@@ -782,7 +952,7 @@ async function startServer() {
   // User changes own password
   app.post("/api/users/change-password", (req, res) => {
     const db = getDB();
-    const reqUserId = req.headers["x-user-id"] as string;
+    const reqUserId = (req as any).authUser?.id;
     const { currentPassword, newPassword } = req.body;
 
     const userIndex = (db.users || []).findIndex((u: any) => u.id === reqUserId);
@@ -790,15 +960,18 @@ async function startServer() {
       return res.status(404).json({ error: "ইউজার পাওয়া যায়নি।" });
     }
 
-    if (db.users[userIndex].password !== currentPassword) {
+    if (!verifyServerPassword(db.users[userIndex], String(currentPassword || ""))) {
       return res.status(400).json({ error: "বর্তমান পাসওয়ার্ড সঠিক নয়।" });
     }
 
-    if (!newPassword || newPassword.trim().length < 4) {
-      return res.status(400).json({ error: "নতুন পাসওয়ার্ড কমপক্ষে ৪ অক্ষরের হতে হবে।" });
+    if (!newPassword || newPassword.trim().length < 6) {
+      return res.status(400).json({ error: "নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।" });
     }
 
-    db.users[userIndex].password = newPassword.trim();
+    const { passwordHash, passwordSalt } = hashServerPassword(newPassword.trim());
+    db.users[userIndex].passwordHash = passwordHash;
+    db.users[userIndex].passwordSalt = passwordSalt;
+    delete db.users[userIndex].password;
     saveDB(db);
     res.json({ success: true, message: "পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে।" });
   });
@@ -860,8 +1033,8 @@ async function startServer() {
   // Sales with Salesman Isolation
   app.get("/api/sales", (req, res) => {
     const db = getDB();
-    const reqUserId = req.headers["x-user-id"] as string;
-    const currentUser = (db.users || []).find((u: any) => u.id === reqUserId);
+    const currentUser = (req as any).authUser;
+    const reqUserId = currentUser?.id;
     const isAdmin = currentUser?.role === 'admin';
 
     const queryUserId = req.query.userId as string;
@@ -888,7 +1061,7 @@ async function startServer() {
 
   app.post("/api/sales", (req, res) => {
     const db = getDB();
-    const reqUserId = (req.headers["x-user-id"] as string) || "admin-1";
+    const reqUserId = (req as any).authUser?.id || "admin-1";
     const sale = {
       ...req.body,
       id: req.body.id || ("sale_" + Date.now()),
@@ -1211,8 +1384,7 @@ async function startServer() {
       const hostname = parsed.hostname.toLowerCase();
       return (
         hostname === 'script.google.com' ||
-        hostname === 'script.googleusercontent.com' ||
-        hostname.endsWith('.google.com')
+        hostname === 'script.googleusercontent.com'
       );
     } catch {
       return false;

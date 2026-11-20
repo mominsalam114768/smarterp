@@ -38,7 +38,7 @@ const menuItems = [
   { id: "dashboard", label: "ড্যাশবোর্ড", icon: LayoutDashboard },
   { id: "pos", label: "পিওএস (POS)", icon: ShoppingCart },
   { id: "sales", label: "বিক্রয়", icon: FileText },
-  { id: "approvals", label: "অনুমোদন রিকুয়েস্ট", icon: ClipboardCheck },
+  { id: "approvals", label: "বিক্রয় অর্ডার", icon: ClipboardCheck },
   { id: "products", label: "পণ্য তালিকা", icon: Package },
   { id: "customers", label: "ক্রেতা", icon: Users },
   { id: "suppliers", label: "সরবরাহকারী", icon: Truck },

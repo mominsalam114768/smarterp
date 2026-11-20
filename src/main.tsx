@@ -24,11 +24,16 @@ if ('caches' in window) {
 
 const updateSW = registerSW({
   onNeedRefresh() {
-    console.log('New content available, please refresh.');
-    if (confirm('অ্যাপের নতুন ভার্সন এসেছে! আপডেট করতে OK চাপুন। (A new version is available)')) {
-      updateSW(true);
-      window.location.reload();
-    }
+    window.dispatchEvent(
+      new CustomEvent('app-update-available', {
+        detail: {
+          apply: () => {
+            updateSW(true);
+            window.location.reload();
+          }
+        }
+      })
+    );
   },
   onOfflineReady() {
     console.log('App is ready to work offline.');

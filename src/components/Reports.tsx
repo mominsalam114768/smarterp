@@ -23,6 +23,12 @@ export function Reports({ user }: { user: User | null }) {
   const [loading, setLoading] = useState(true);
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string>("all");
+  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showNotify = (message: string, type: 'success' | 'error' = 'error') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 3500);
+  };
   
   const isAdmin = user?.role === 'admin';
 
@@ -128,7 +134,7 @@ export function Reports({ user }: { user: User | null }) {
     if (isAdmin) {
       api.getUsers().then(setUsers);
     }
-  }, []); // Initial load
+  }, [user?.businessId]); // Reload if shop switches
 
   const handleApplyFilter = () => {
     loadData();
@@ -136,7 +142,7 @@ export function Reports({ user }: { user: User | null }) {
 
   const handlePrintSummary = () => {
     if (!stats) {
-      alert("রিপোর্ট ডাটা এখনো লোড হয়নি!");
+      showNotify("রিপোর্ট ডাটা এখনো লোড হয়নি!", "error");
       return;
     }
     
@@ -408,6 +414,13 @@ export function Reports({ user }: { user: User | null }) {
           </div>
         </div>
       </div>
+      {notification && (
+        <div className={`fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-xl z-[100] flex items-center gap-3 ${
+          notification.type === 'success' ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'
+        }`}>
+          <span className="font-bold font-bengali">{notification.message}</span>
+        </div>
+      )}
     </div>
   );
 }

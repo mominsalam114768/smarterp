@@ -10,8 +10,11 @@ export interface User {
   phone?: string;
   role: 'admin' | 'manager' | 'salesman' | 'accountant';
   businessId: string;
+  isSuperAdmin?: boolean;
   image?: string;
   password?: string;
+  passwordHash?: string;
+  passwordSalt?: string;
   permissions?: string[];
   lastSeen?: string;
   lastActive?: string;
@@ -36,18 +39,24 @@ export interface Business {
   };
   googleSheetsConfig?: {
     webAppUrl: string;
+    spreadsheetId?: string;
     sheetUrl?: string;
     sheetName?: string;
     autoSync: boolean;
     lastSyncAt?: string;
     lastSyncStatus?: 'success' | 'error';
+    lastSyncMessage?: string;
     lastSyncCount?: {
       products?: number;
       sales?: number;
+      approvals?: number;
       customers?: number;
       suppliers?: number;
       expenses?: number;
       dues?: number;
+      smsLogs?: number;
+      users?: number;
+      categories?: number;
     };
   };
   cloudflareConfig?: {

@@ -17,21 +17,52 @@ export interface SavedDriveAccount {
   backupIntervalHours?: number;
 }
 
+export const GOOGLE_WORKSPACE_SCOPES = [
+  "https://www.googleapis.com/auth/drive.file",
+  "https://www.googleapis.com/auth/spreadsheets"
+];
+
 const DRIVE_ACCOUNT_STORAGE_KEY = "smart_business_drive_account";
 const provider = new GoogleAuthProvider();
-provider.addScope("https://www.googleapis.com/auth/drive.file");
+GOOGLE_WORKSPACE_SCOPES.forEach(scope => provider.addScope(scope));
 
 let isSigningIn = false;
+// Strictly in-memory OAuth access token cache (never stored in localStorage/sessionStorage)
 let cachedAccessToken: string | null = null;
 let currentGoogleUser: { email: string; displayName?: string; photoURL?: string } | null = null;
+const tokenListeners = new Set<(hasToken: boolean) => void>();
 
-// Read saved account from localStorage
+const notifyTokenListeners = () => {
+  const active = Boolean(cachedAccessToken);
+  tokenListeners.forEach(cb => {
+    try {
+      cb(active);
+    } catch {}
+  });
+};
+
+export const subscribeGoogleTokenChange = (cb: (hasToken: boolean) => void): (() => void) => {
+  tokenListeners.add(cb);
+  return () => {
+    tokenListeners.delete(cb);
+  };
+};
+
+export const hasActiveGoogleToken = (): boolean => Boolean(cachedAccessToken);
+
+// Read saved account profile metadata (never reads/stores access tokens)
 export const getSavedDriveAccount = (): SavedDriveAccount | null => {
   if (typeof window === "undefined") return null;
   try {
     const raw = localStorage.getItem(DRIVE_ACCOUNT_STORAGE_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      // Clean any legacy persisted accessToken if present
+      if (parsed && "accessToken" in parsed) {
+        delete parsed.accessToken;
+        localStorage.setItem(DRIVE_ACCOUNT_STORAGE_KEY, JSON.stringify(parsed));
+      }
+      return parsed;
     }
   } catch (e) {
     console.warn("Failed to parse saved drive account:", e);
@@ -54,14 +85,25 @@ const getActiveDriveBusinessId = (): string => {
   return "main-business";
 };
 
-// Save drive account locally and in Firestore
+// Save Google account profile metadata locally and in Firestore (accessToken stays strictly in memory)
 export const saveDriveAccount = async (account: SavedDriveAccount, businessId?: string) => {
   const targetBizId = businessId || getActiveDriveBusinessId();
-  if (typeof window !== "undefined") {
-    localStorage.setItem(DRIVE_ACCOUNT_STORAGE_KEY, JSON.stringify(account));
-  }
   if (account.accessToken) {
     cachedAccessToken = account.accessToken;
+    notifyTokenListeners();
+  }
+  const safeAccountMetadata: SavedDriveAccount = {
+    email: account.email,
+    displayName: account.displayName,
+    photoURL: account.photoURL,
+    connectedAt: account.connectedAt,
+    autoBackupEnabled: account.autoBackupEnabled !== false,
+    lastBackupAt: account.lastBackupAt,
+    backupIntervalHours: account.backupIntervalHours || 6
+  };
+
+  if (typeof window !== "undefined") {
+    localStorage.setItem(DRIVE_ACCOUNT_STORAGE_KEY, JSON.stringify(safeAccountMetadata));
   }
   currentGoogleUser = {
     email: account.email,
@@ -69,7 +111,7 @@ export const saveDriveAccount = async (account: SavedDriveAccount, businessId?: 
     photoURL: account.photoURL
   };
 
-  // Sync to Firestore cloud config so all admin sessions know Drive is connected
+  // Sync to Firestore cloud config so all admin sessions know Google Workspace is connected
   try {
     const configRef = doc(db, "businesses", targetBizId, "config", "drive_backup");
     await setDoc(configRef, {
@@ -86,7 +128,7 @@ export const saveDriveAccount = async (account: SavedDriveAccount, businessId?: 
   }
 };
 
-// Load saved drive account from Firestore cloud config
+// Load saved Google account metadata from Firestore cloud config
 export const fetchCloudDriveAccount = async (businessId?: string): Promise<SavedDriveAccount | null> => {
   const targetBizId = businessId || getActiveDriveBusinessId();
   try {
@@ -100,7 +142,6 @@ export const fetchCloudDriveAccount = async (businessId?: string): Promise<Saved
           email: data.email,
           displayName: data.displayName || local?.displayName || "",
           photoURL: local?.photoURL || "",
-          accessToken: local?.accessToken || undefined,
           connectedAt: data.connectedAt || new Date().toISOString(),
           autoBackupEnabled: data.autoBackupEnabled !== false,
           lastBackupAt: data.lastBackupAt || local?.lastBackupAt,
@@ -127,6 +168,10 @@ export const disconnectDriveAccount = async (businessId?: string) => {
   const targetBizId = businessId || getActiveDriveBusinessId();
   cachedAccessToken = null;
   currentGoogleUser = null;
+  notifyTokenListeners();
+  try {
+    await auth.signOut();
+  } catch {}
   if (typeof window !== "undefined") {
     localStorage.removeItem(DRIVE_ACCOUNT_STORAGE_KEY);
   }
@@ -146,7 +191,7 @@ export const initDriveAuth = (
   onAuthSuccess?: (user: { email: string; displayName?: string; photoURL?: string }, token: string) => void,
   onAuthFailure?: () => void
 ) => {
-  // Check local saved account first
+  // Check local saved account profile first
   const saved = getSavedDriveAccount();
   if (saved && saved.email) {
     currentGoogleUser = {
@@ -154,10 +199,6 @@ export const initDriveAuth = (
       displayName: saved.displayName,
       photoURL: saved.photoURL
     };
-    if (saved.accessToken) {
-      cachedAccessToken = saved.accessToken;
-      if (onAuthSuccess) onAuthSuccess(currentGoogleUser, saved.accessToken);
-    }
   }
 
   // Also check Firestore in background
@@ -168,8 +209,8 @@ export const initDriveAuth = (
         displayName: cloudAcc.displayName,
         photoURL: cloudAcc.photoURL
       };
-      if (cloudAcc.accessToken && onAuthSuccess) {
-        onAuthSuccess(currentGoogleUser, cloudAcc.accessToken);
+      if (cachedAccessToken && onAuthSuccess) {
+        onAuthSuccess(currentGoogleUser, cachedAccessToken);
       }
     }
   });
@@ -183,7 +224,13 @@ export const initDriveAuth = (
       };
       if (cachedAccessToken) {
         if (onAuthSuccess) onAuthSuccess(currentGoogleUser, cachedAccessToken);
+      } else if (!isSigningIn && onAuthFailure) {
+        onAuthFailure();
       }
+    } else if (!isSigningIn) {
+      cachedAccessToken = null;
+      notifyTokenListeners();
+      if (onAuthFailure) onAuthFailure();
     }
   });
 };
@@ -194,10 +241,12 @@ export const googleDriveSignIn = async (): Promise<{ user: { email: string; disp
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
-      throw new Error("গুগল ড্রাইভ অ্যাক্সেস টোকেন পাওয়া যায়নি");
+      throw new Error("গুগল শিট ও ড্রাইভ অ্যাক্সেস টোকেন পাওয়া যায়নি");
     }
 
     cachedAccessToken = credential.accessToken;
+    notifyTokenListeners();
+
     const gUser = {
       email: result.user.email || "Google User",
       displayName: result.user.displayName || undefined,
@@ -209,7 +258,6 @@ export const googleDriveSignIn = async (): Promise<{ user: { email: string; disp
       email: gUser.email,
       displayName: gUser.displayName,
       photoURL: gUser.photoURL,
-      accessToken: cachedAccessToken,
       connectedAt: new Date().toISOString(),
       autoBackupEnabled: true,
       backupIntervalHours: 6
@@ -218,8 +266,8 @@ export const googleDriveSignIn = async (): Promise<{ user: { email: string; disp
 
     return { user: gUser, accessToken: cachedAccessToken };
   } catch (error: any) {
-    console.error("Google Drive Sign-in error:", error);
-    let msg = error.message || "গুগল ড্রাইভ সাইন-ইন সম্পন্ন হয়নি";
+    console.error("Google Workspace Sign-in error:", error);
+    let msg = error.message || "গুগল সাইন-ইন সম্পন্ন হয়নি";
     const currentHost = typeof window !== "undefined" ? window.location.hostname : "";
 
     if (error.code === "auth/unauthorized-domain") {
@@ -237,10 +285,15 @@ export const googleDriveSignIn = async (): Promise<{ user: { email: string; disp
   }
 };
 
+export const signInWithGoogleSheets = googleDriveSignIn;
+
 export const getDriveAccessToken = (): string | null => {
-  if (cachedAccessToken) return cachedAccessToken;
-  const saved = getSavedDriveAccount();
-  return saved?.accessToken || null;
+  return cachedAccessToken;
+};
+
+export const clearInMemoryGoogleToken = () => {
+  cachedAccessToken = null;
+  notifyTokenListeners();
 };
 
 export const getGoogleUser = (): { email: string; displayName?: string; photoURL?: string } | null => {

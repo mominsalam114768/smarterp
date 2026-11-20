@@ -26,10 +26,17 @@ export function SalesList({ user }: SalesListProps) {
   const isAdmin = user?.role === 'admin';
   const canDelete = isAdmin || user?.permissions?.includes('delete_sale');
 
+  const isConfirmedSaleItem = (s: Sale) =>
+    !s.isTemporary &&
+    s.approvalStatus !== 'pending' &&
+    s.approvalStatus !== 'rejected' &&
+    !String(s.invoiceNo || '').startsWith('TMP-');
+
   const fetchSales = () => {
     api.getSales().then(items => {
+      const confirmedOnly = (items || []).filter(isConfirmedSaleItem);
       // Data Isolation: Filter sales by userId if not admin
-      const filtered = isAdmin ? items : items.filter(s => s.userId === user?.id);
+      const filtered = isAdmin ? confirmedOnly : confirmedOnly.filter(s => s.userId === user?.id || s.createdBy === user?.id);
       setSales(filtered);
     });
   };
@@ -46,7 +53,8 @@ export function SalesList({ user }: SalesListProps) {
     }
 
     const unsubSales = api.subscribeSales((items) => {
-      const filtered = isAdmin ? items : items.filter(s => s.userId === user?.id);
+      const confirmedOnly = (items || []).filter(isConfirmedSaleItem);
+      const filtered = isAdmin ? confirmedOnly : confirmedOnly.filter(s => s.userId === user?.id || s.createdBy === user?.id);
       setSales(filtered);
     });
 
@@ -77,7 +85,8 @@ export function SalesList({ user }: SalesListProps) {
   };
 
   const filtered = sales.filter(s => {
-    const matchesSearch = s.invoiceNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    if (!isConfirmedSaleItem(s)) return false;
+    const matchesSearch = (s.invoiceNo || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
                          (s.customerName && s.customerName.toLowerCase().includes(searchTerm.toLowerCase()));
     const matchesUser = selectedUserId === "all" ? true : (s.userId === selectedUserId || s.createdBy === selectedUserId);
     return matchesSearch && matchesUser;

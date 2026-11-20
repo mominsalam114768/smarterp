@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, FormEvent, ChangeEvent, useRef } from "react";
-import { api } from "../services/api";
+import { api, isShopAdmin } from "../services/api";
 import { Customer, Sale, User } from "../types";
 import { Users, UserPlus, Phone, MapPin, Calculator, History, Search, Plus, Trash2, Edit, X, FileText, MessageSquare, Printer, FileSpreadsheet, Download } from "lucide-react";
 import { printCustomerStatement } from "../lib/printUtils";
@@ -60,7 +60,7 @@ export function CustomerList({ user }: CustomerListProps) {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isShopAdmin(user);
   const canAdd = isAdmin || user?.permissions?.includes('add_customer');
   const canDelete = isAdmin || user?.permissions?.includes('delete_customer');
 
@@ -71,8 +71,7 @@ export function CustomerList({ user }: CustomerListProps) {
     }
 
     const unsubCust = api.subscribeCustomers((items) => {
-      const filtered = isAdmin ? items : items.filter(c => c.createdBy === user?.id);
-      setCustomers(filtered);
+      setCustomers(items);
     });
 
     return () => {
@@ -105,9 +104,7 @@ export function CustomerList({ user }: CustomerListProps) {
   const loadData = async () => {
     try {
       const items = await api.getCustomers();
-      // Data Isolation: Filter customers by creator if not admin
-      const filteredItems = isAdmin ? items : items.filter(c => c.createdBy === user?.id);
-      setCustomers(filteredItems);
+      setCustomers(items);
     } catch (err) {
       console.error("Load Error:", err);
     }
@@ -128,7 +125,16 @@ export function CustomerList({ user }: CustomerListProps) {
     e.preventDefault();
     try {
       if (editingCustomer) {
-        await api.updateCustomer(editingCustomer.id, formData);
+        const updatePayload: Partial<Customer> = isAdmin
+          ? formData
+          : {
+              name: formData.name,
+              phone: formData.phone,
+              address: formData.address,
+              email: formData.email,
+              image: formData.image,
+            };
+        await api.updateCustomer(editingCustomer.id, updatePayload);
         showNotify("কাস্টমার তথ্য আপডেট করা হয়েছে");
       } else {
         await api.createCustomer({

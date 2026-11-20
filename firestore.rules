@@ -25,25 +25,24 @@ service cloud.firestore {
     }
 
     function isOwner() {
-      return isSignedIn() && 
-             request.auth.token != null && (
-               request.auth.token.email == 'nahid521610@gmail.com' ||
-               request.auth.token.email == 'mominkhan051220@gmail.com' ||
-               request.auth.uid == 'yHCNX6b117U0KIIoZomnJKza7qb2'
-             );
+      return isSignedIn() &&
+             request.auth.token != null &&
+             request.auth.token.admin == true;
     }
 
-    // Check if super admin (admins collection lookup or isOwner)
+    // Check if super admin (admins collection lookup, custom admin claim, or isSuperAdmin profile flag)
     function isAdmin() {
       return isSignedIn() && (
-        isOwner() || 
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        isOwner() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isSuperAdmin', false) == true)
       );
     }
 
     // Check if user belongs to the business
     function isBusinessUser(businessId) {
-      return !isSignedIn() || 
+      return !isSignedIn() ||
              (isSignedIn() && (
                isAdmin() ||
                !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
@@ -51,13 +50,16 @@ service cloud.firestore {
              ));
     }
 
-    // Check if user is business admin (owner or superadmin or has 'admin' role in businesses users lookup)
+    // Check if user is business admin (owner or superadmin or has 'admin' role in business)
     function isBusinessAdmin(businessId) {
-      return !isSignedIn() || 
+      return !isSignedIn() ||
              (isSignedIn() && (
                isAdmin() ||
                !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
-               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+               (
+                 get(/databases/$(database)/documents/users/$(request.auth.uid)).data.businessId == businessId &&
+                 get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+               )
              ));
     }
 
@@ -118,15 +120,27 @@ service cloud.firestore {
 
     function isValidUser(data) {
       return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
-             data.email is string && data.email.size() <= 100 &&
+             data.email is string && data.email.size() <= 120 &&
              data.role in ['admin', 'manager', 'salesman', 'accountant', 'staff'] &&
-             data.businessId is string &&
-             (!('phone' in data) || data.phone is string) &&
-             (!('password' in data) || data.password is string) &&
-             (!('image' in data) || data.image is string) &&
-             (!('permissions' in data) || data.permissions is list) &&
+             data.businessId is string && data.businessId.size() > 0 && data.businessId.size() <= 128 &&
+             (!('isSuperAdmin' in data) || data.isSuperAdmin is bool) &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('password' in data) || (data.password is string && data.password.size() <= 128)) &&
+             (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 128)) &&
+             (!('passwordSalt' in data) || (data.passwordSalt is string && data.passwordSalt.size() <= 128)) &&
+             (!('image' in data) || (data.image is string && data.image.size() <= 200000)) &&
+             (!('permissions' in data) || (data.permissions is list && data.permissions.size() <= 50)) &&
              (!('lastSeen' in data) || data.lastSeen is string) &&
              (!('lastActive' in data) || data.lastActive is string) &&
+             (!('createdAt' in data) || data.createdAt is string);
+    }
+
+    function isValidApprovalRequest(data) {
+      return data.type in ['sale', 'due_payment'] &&
+             data.status in ['pending', 'approved', 'rejected'] &&
+             data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128 &&
+             (!('userName' in data) || (data.userName is string && data.userName.size() <= 100)) &&
+             (!('temporaryInvoiceNo' in data) || (data.temporaryInvoiceNo is string && data.temporaryInvoiceNo.size() <= 64)) &&
              (!('createdAt' in data) || data.createdAt is string);
     }
 
@@ -148,7 +162,7 @@ service cloud.firestore {
     }
 
     function isValidBusiness(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+      return (!('name' in data) || (data.name is string && data.name.size() > 0 && data.name.size() <= 100)) &&
              (!('id' in data) || data.id is string) &&
              (!('address' in data) || data.address is string) &&
              (!('phone' in data) || data.phone is string) &&
@@ -159,7 +173,8 @@ service cloud.firestore {
              (!('defaultPrinter' in data) || data.defaultPrinter is string) &&
              (!('theme' in data) || data.theme is string) &&
              (!('createdAt' in data) || data.createdAt is string) &&
-             (!('smtpConfig' in data) || data.smtpConfig is map);
+             (!('smtpConfig' in data) || data.smtpConfig is map) &&
+             (!('googleSheetsConfig' in data) || data.googleSheetsConfig is map);
     }
 
     // --- Match Rules ---
@@ -168,22 +183,27 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if true; // Required for login lookups by email
       allow list: if true; // Required for unauthenticated email-based queries during login
-      
-      allow create: if isValidUser(incoming()) && (
+
+      allow create: if isValidUser(incoming()) && isValidId(userId) && (
         isAdmin() ||
-        (incoming().role != 'admin' && !exists(/databases/$(database)/documents/users/$(userId)))
+        (userId == 'admin-1' && !exists(/databases/$(database)/documents/users/admin-1)) ||
+        (!isSignedIn() && !exists(/databases/$(database)/documents/users/$(userId)) && incoming().get('isSuperAdmin', false) == false) ||
+        (incoming().role != 'admin' && !exists(/databases/$(database)/documents/users/$(userId)) && incoming().get('isSuperAdmin', false) == false)
       );
-      
+
       allow update: if isValidUser(incoming()) && (
-        isAdmin() || (
+        isAdmin() ||
+        (
           isSignedIn() &&
-          request.auth.uid == userId && 
-          incoming().role == existing().role && 
-          incoming().businessId == existing().businessId
-        )
+          request.auth.uid == userId &&
+          incoming().role == existing().role &&
+          incoming().businessId == existing().businessId &&
+          incoming().get('isSuperAdmin', false) == existing().get('isSuperAdmin', false)
+        ) ||
+        (!isSignedIn() && isBusinessAdmin(existing().businessId))
       );
-      
-      allow delete: if isBusinessAdmin('main-business');
+
+      allow delete: if isBusinessAdmin('main-business') && userId != 'admin-1';
     }
 
     // 2. Business Data and Subcollections
@@ -235,9 +255,12 @@ service cloud.firestore {
         allow delete: if isBusinessAdmin(businessId);
       }
 
-      // Approval Requests subcollection (Temporary Invoices / Due Payment Requests)
+      // Approval Requests subcollection (Sales Orders / Due Payment Requests)
       match /approval_requests/{requestId} {
-        allow read, write: if true;
+        allow read: if isBusinessUser(businessId);
+        allow create: if isBusinessUser(businessId) && isValidApprovalRequest(incoming()) && isValidId(requestId);
+        allow update: if isBusinessUser(businessId) && isValidApprovalRequest(incoming());
+        allow delete: if isBusinessAdmin(businessId);
       }
 
       // Expenses subcollection
@@ -283,7 +306,7 @@ service cloud.firestore {
     
     // 4. Fallback/aggregate errors tracking path if any
     match /dashboard_aggregate/{docId} {
-      allow read: if true;
+      allow read: if isBusinessUser('main-business');
       allow write: if isBusinessUser('main-business');
     }
   }

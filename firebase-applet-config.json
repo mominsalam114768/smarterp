@@ -1,12 +1,12 @@
 {
-  "projectId": "psychic-antenna-hg02f",
-  "appId": "1:6040711439:web:432e1d763fbdb6bdc08e7a",
-  "apiKey": "AIzaSyB09qMqNyuhJ28hoqv_Ui_CHdQBtCuK2f4",
-  "authDomain": "psychic-antenna-hg02f.firebaseapp.com",
+  "projectId": "gen-lang-client-0633559040",
+  "appId": "1:497893277241:web:1cee857f1311f15843d7e8",
+  "apiKey": "AIzaSyD_yEYlOU0PUl_0_Y5XsHmFmOkVWNVoR7w",
+  "authDomain": "gen-lang-client-0633559040.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-remixhishabpatie-b725f57b-c067-4185-916f-1febb0596d8d",
-  "storageBucket": "psychic-antenna-hg02f.firebasestorage.app",
-  "messagingSenderId": "6040711439",
+  "storageBucket": "gen-lang-client-0633559040.firebasestorage.app",
+  "messagingSenderId": "497893277241",
   "measurementId": "",
-  "oAuthClientId": "6040711439-458l470kog9soqco2nffiik8v4dir0ro.apps.googleusercontent.com",
+  "oAuthClientId": "497893277241-0q9m3vqrs519dfijeva4udkisc4dba5h.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

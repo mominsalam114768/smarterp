@@ -50,6 +50,7 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
   const [selectedRequest, setSelectedRequest] = useState<ApprovalRequest | null>(null);
   const [rejectingRequestId, setRejectingRequestId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [shortageConfirmModal, setShortageConfirmModal] = useState<{ req: ApprovalRequest; shortages: string[] } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -139,26 +140,15 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
   };
 
   // Action: Approve
-  const handleApprove = async (req: ApprovalRequest) => {
-    if (!isAdmin) {
-      showNotify("শুধুমাত্র এডমিন অনুমোদন করতে পারেন।", "error");
-      return;
-    }
-
-    // Check stock for sales
-    if (req.type === 'sale') {
-      const stockCheck = checkStockAvailability(req);
-      if (!stockCheck.ok) {
-        if (!confirm(`সতর্কতা: স্টকে ঘাটতি রয়েছে!\n${stockCheck.shortages.join('\n')}\n\nতবুও কি অনুমোদন করতে চান?`)) {
-          return;
-        }
-      }
-    }
-
+  const executeApprove = async (req: ApprovalRequest) => {
     try {
       setIsProcessing(true);
       const res = await api.approveRequest(req.id);
-      showNotify("রিকুয়েস্ট সফলভাবে অনুমোদিত হয়েছে! স্টক ও হিসাব আপডেট হয়েছে।", "success");
+      if (res.type === 'sale' && res.sale) {
+        showNotify(`বিক্রয় অর্ডার কনফার্ম হয়েছে এবং বিক্রয় লিস্টে যুক্ত হয়েছে! ইনভয়েস: #${res.sale.invoiceNo}`, "success");
+      } else {
+        showNotify("বিক্রয় অর্ডার সফলভাবে অনুমোদিত হয়েছে! স্টক ও হিসাব আপডেট হয়েছে।", "success");
+      }
 
       // Auto print official voucher
       if (res.type === 'sale' && res.sale) {
@@ -185,6 +175,24 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const handleApprove = async (req: ApprovalRequest) => {
+    if (!isAdmin) {
+      showNotify("শুধুমাত্র এডমিন বিক্রয় অর্ডার অনুমোদন করতে পারেন।", "error");
+      return;
+    }
+
+    // Check stock for sales using in-app modal instead of native confirm()
+    if (req.type === 'sale') {
+      const stockCheck = checkStockAvailability(req);
+      if (!stockCheck.ok) {
+        setShortageConfirmModal({ req, shortages: stockCheck.shortages });
+        return;
+      }
+    }
+
+    await executeApprove(req);
   };
 
   // Action: Reject
@@ -249,10 +257,10 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
             </div>
             <div>
               <h1 className="text-2xl font-black text-slate-900 dark:text-white font-bengali tracking-tight">
-                অনুমোদন রিকুয়েস্ট ব্যবস্থাপনা (Approval Requests)
+                বিক্রয় অর্ডার ব্যবস্থাপনা (Sales Orders)
               </h1>
               <p className="text-slate-500 dark:text-slate-400 text-xs sm:text-sm font-bengali">
-                সেলসম্যানদের বিক্রয় ও বকেয়া আদায়ের খসড়া রিকুয়েস্ট পর্যালোচনা ও অনুমোদন করুন
+                সেলসম্যানদের বিক্রয় অর্ডার ও বকেয়া আদায়ের খসড়া রিকুয়েস্ট পর্যালোচনা ও অনুমোদন করুন
               </p>
             </div>
           </div>
@@ -855,6 +863,59 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
                   className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-500/20"
                 >
                   হ্যাঁ, বাতিল করুন
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Stock Shortage Confirmation Modal */}
+      <AnimatePresence>
+        {shortageConfirmModal && (
+          <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white dark:bg-slate-900 w-full max-w-md rounded-3xl p-6 shadow-2xl border border-amber-200 dark:border-amber-900/50 space-y-4 font-bengali"
+            >
+              <div className="flex items-center gap-3 text-amber-600">
+                <AlertTriangle size={28} />
+                <h3 className="font-bold text-lg text-slate-900 dark:text-white">
+                  সতর্কতা: স্টকে ঘাটতি রয়েছে!
+                </h3>
+              </div>
+
+              <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-2xl text-xs text-amber-900 dark:text-amber-200 space-y-1">
+                {shortageConfirmModal.shortages.map((s, idx) => (
+                  <p key={idx}>• {s}</p>
+                ))}
+              </div>
+
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                স্টক কম থাকা সত্ত্বেও আপনি কি এই বিক্রয় অর্ডারটি অনুমোদন করতে চান?
+              </p>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShortageConfirmModal(null)}
+                  className="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl text-xs font-bold"
+                >
+                  ফিরে যান
+                </button>
+                <button
+                  type="button"
+                  disabled={isProcessing}
+                  onClick={async () => {
+                    const targetReq = shortageConfirmModal.req;
+                    setShortageConfirmModal(null);
+                    await executeApprove(targetReq);
+                  }}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-500/20"
+                >
+                  হ্যাঁ, অনুমোদন করুন
                 </button>
               </div>
             </motion.div>

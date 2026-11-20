@@ -29,8 +29,11 @@ import {
   deleteDoc, 
   query, 
   where,
-  onSnapshot
+  limit,
+  onSnapshot,
+  deleteField
 } from "../lib/firebase";
+import { hashPassword, verifyPassword } from "../lib/crypto";
 import { 
   syncEntityToGoogleSheets, 
   syncAllToGoogleSheets, 
@@ -40,6 +43,7 @@ import {
   testGoogleSheetsConnection,
   setSheetsBusinessId,
   autoCreateShopGoogleSheet,
+  ensureShopGoogleSheet,
   renameShopGoogleSheet,
   deleteShopGoogleSheet
 } from "../lib/sheetsSync";
@@ -47,6 +51,13 @@ import {
 const USER_SESSION_KEY = "smart_business_user";
 const LOCAL_DB_KEY = "smart_business_db_v2";
 const ACTIVE_SHOP_KEY = "smart_active_shop_id";
+
+export const ADMIN_DEFAULT_PERMISSIONS: string[] = [
+  "dashboard", "pos", "sales", "add_sale", "delete_sale",
+  "products", "add_product", "delete_product", "customers",
+  "add_customer", "delete_customer", "suppliers", "accounting",
+  "due", "sms", "reports", "users", "settings"
+];
 
 let currentBusinessId: string = "main-business";
 
@@ -62,17 +73,38 @@ export const setApiBusinessId = (id: string | null) => {
   }
 };
 
-export const isSuperAdminUser = (u?: Partial<User> | null): boolean => {
+export const isGlobalSuperAdmin = (u?: Partial<User> | null): boolean => {
   if (!u) return false;
-  const email = (u.email || "").toLowerCase().trim();
   return (
-    u.role === "admin" ||
     u.id === "admin-1" ||
-    email === "mominkhan051220@gmail.com" ||
-    email === "nahid521610@gmail.com" ||
-    email === "md.momin.khan7579@gmail.com"
+    u.isSuperAdmin === true ||
+    (u.role as string) === "super_admin"
   );
 };
+
+export const isSuperAdminUser = isGlobalSuperAdmin;
+
+export const isShopAdmin = (u?: Partial<User> | null): boolean => {
+  if (!u) return false;
+  return isGlobalSuperAdmin(u) || u.role === "admin";
+};
+
+export const stripSensitiveUserFields = (u: any): User => {
+  if (!u || typeof u !== "object") return u;
+  const { password: _p, passwordHash: _h, passwordSalt: _s, ...safe } = u;
+  return safe as User;
+};
+
+async function verifyUserCredential(uData: any, candidatePassword: string): Promise<boolean> {
+  if (!uData || !candidatePassword) return false;
+  if (uData.passwordHash && uData.passwordSalt) {
+    return verifyPassword(candidatePassword, String(uData.passwordHash), String(uData.passwordSalt));
+  }
+  if (typeof uData.password === "string" && uData.password.length > 0) {
+    return uData.password === candidatePassword;
+  }
+  return false;
+}
 
 interface LocalDBState {
   users: any[];
@@ -90,27 +122,9 @@ interface LocalDBState {
   approvalRequests: ApprovalRequest[];
 }
 
-// Default initial data for seeding if Firestore is empty (Only Admin, everything else fresh and empty)
+// Default initial empty state (No hardcoded admin passwords or personal emails)
 const defaultDbData: LocalDBState = {
-  users: [
-    { 
-      id: "admin-1", 
-      name: "মোঃ মমিন আলী", 
-      email: "mominkhan051220@gmail.com", 
-      phone: "01741456838", 
-      password: "Momin1234@", 
-      role: "admin", 
-      permissions: [
-        "dashboard", "pos", "sales", "add_sale", "delete_sale", 
-        "products", "add_product", "delete_product", "customers", 
-        "add_customer", "delete_customer", "suppliers", "accounting", 
-        "due", "sms", "reports", "users", "settings"
-      ],
-      businessId: "main-business",
-      createdAt: new Date().toISOString(),
-      lastSeen: new Date().toISOString() 
-    }
-  ],
+  users: [],
   products: [],
   categories: [],
   customers: [],
@@ -130,7 +144,7 @@ const defaultDbData: LocalDBState = {
     name: "হিসাব পাতি",
     currency: "৳",
     address: "ঢাকা, বাংলাদেশ",
-    phone: "01741456838",
+    phone: "",
     theme: "light"
   },
   approvalRequests: []
@@ -185,7 +199,7 @@ function getLocalCache(bizId: string = currentBusinessId): LocalDBState {
     }
     const parsed = JSON.parse(raw);
     return {
-      users: parsed.users || defaultDbData.users,
+      users: parsed.users || [],
       products: parsed.products || [],
       categories: parsed.categories || [],
       customers: parsed.customers || [],
@@ -283,35 +297,180 @@ export const reconcileCustomersWithSales = (customers: Customer[], sales: Sale[]
   });
 };
 
+const withFirestoreTimeout = <T>(promise: Promise<T>, ms = 7000): Promise<T> => {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("FIRESTORE_TIMEOUT"));
+    }, ms);
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+};
+
 export const api = {
+  // --- Initial Super Admin Onboarding Check & Bootstrap ---
+  hasAnyUser: async (): Promise<boolean> => {
+    try {
+      const snap = await withFirestoreTimeout(getDocs(query(collection(db, "users"), limit(1))), 6000);
+      if (!snap.empty) return true;
+    } catch (e) {
+      console.warn("Firestore hasAnyUser check failed, checking local cache:", e);
+    }
+    if (typeof window !== "undefined") {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(LOCAL_DB_KEY)) {
+          try {
+            const parsed = JSON.parse(localStorage.getItem(k) || "{}");
+            if (Array.isArray(parsed.users) && parsed.users.length > 0) {
+              return true;
+            }
+          } catch {}
+        }
+      }
+    }
+    return false;
+  },
+
+  bootstrapInitialAdmin: async (params: {
+    name: string;
+    email: string;
+    phone?: string;
+    password: string;
+  }): Promise<User> => {
+    const cleanName = (params.name || "").trim();
+    const cleanEmail = (params.email || "").trim().toLowerCase();
+    const cleanPhone = (params.phone || "").trim();
+    const cleanPassword = (params.password || "").trim();
+
+    if (!cleanName || !cleanEmail) {
+      throw new Error("নাম এবং ইমেইল প্রদান করা আবশ্যক।");
+    }
+    if (cleanPassword.length < 6) {
+      throw new Error("পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।");
+    }
+
+    const alreadyExists = await api.hasAnyUser();
+    if (alreadyExists) {
+      throw new Error("সিস্টেমে ইতিমধ্যেই একজন সুপার অ্যাডমিন নিবন্ধিত আছেন। অনুগ্রহ করে লগইন করুন।");
+    }
+
+    const { hash, salt } = await hashPassword(cleanPassword);
+    const now = new Date().toISOString();
+
+    const adminRecord: any = {
+      id: "admin-1",
+      name: cleanName,
+      email: cleanEmail,
+      phone: cleanPhone,
+      role: "admin",
+      isSuperAdmin: true,
+      permissions: ADMIN_DEFAULT_PERMISSIONS,
+      businessId: "main-business",
+      passwordHash: hash,
+      passwordSalt: salt,
+      createdAt: now,
+      lastSeen: now
+    };
+
+    try {
+      await withFirestoreTimeout(
+        Promise.all([
+          setDoc(doc(db, "businesses", "main-business"), cleanForFirestore({
+            ...defaultDbData.business,
+            phone: cleanPhone || defaultDbData.business.phone
+          }), { merge: true }),
+          setDoc(doc(db, "users", "admin-1"), cleanForFirestore(adminRecord))
+        ]),
+        8000
+      );
+    } catch (e: any) {
+      console.warn("Bootstrap initial admin Firestore write warning (continuing with local cache):", e);
+      // Still kick off background writes if it timed out on slow connection
+      setDoc(doc(db, "businesses", "main-business"), cleanForFirestore({
+        ...defaultDbData.business,
+        phone: cleanPhone || defaultDbData.business.phone
+      }), { merge: true }).catch(() => {});
+      setDoc(doc(db, "users", "admin-1"), cleanForFirestore(adminRecord)).catch(() => {});
+    }
+
+    setApiBusinessId("main-business");
+    const cache = getLocalCache("main-business");
+    cache.users = [adminRecord];
+    saveLocalCache(cache, "main-business");
+
+    return stripSensitiveUserFields(adminRecord);
+  },
+
   // --- Authentication ---
   login: async (email: string, pass: string): Promise<User> => {
     const cleanEmail = email.trim().toLowerCase();
     const cleanPass = pass.trim();
 
+    if (!cleanEmail || !cleanPass) {
+      throw new Error("ইমেইল এবং পাসওয়ার্ড প্রদান করুন।");
+    }
+
     try {
-      // Direct Firestore Lookup
       const usersCol = collection(db, "users");
       const q = query(usersCol, where("email", "==", cleanEmail));
-      const snap = await getDocs(q);
+      const snap = await withFirestoreTimeout(getDocs(q), 6000);
 
       if (!snap.empty) {
         const userDoc = snap.docs[0];
         const userData = userDoc.data() as any;
 
-        if (userData.password && userData.password !== cleanPass) {
+        const valid = await verifyUserCredential(userData, cleanPass);
+        if (!valid) {
           throw new Error("ভুল পাসওয়ার্ড। আবার চেষ্টা করুন।");
         }
 
-        const superAdmin = isSuperAdminUser({ id: userDoc.id, email: userData.email, role: userData.role });
-        const savedAdminShop = typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SHOP_KEY) : null;
-        const resolvedBusinessId = superAdmin
-          ? (savedAdminShop || userData.businessId || "main-business")
-          : (userData.businessId || "main-business");
+        const globalSuper = isGlobalSuperAdmin({ id: userDoc.id, ...userData });
+        const shopAdmin = isShopAdmin({ id: userDoc.id, ...userData });
 
-        const rawPerms: string[] = userData.permissions || defaultDbData.users[0].permissions;
-        const resolvedPerms = superAdmin
-          ? defaultDbData.users[0].permissions
+        // Transparently migrate legacy plaintext password to PBKDF2 hash
+        let nextHash = userData.passwordHash;
+        let nextSalt = userData.passwordSalt;
+        if (!nextHash || !nextSalt) {
+          const migrated = await hashPassword(cleanPass);
+          nextHash = migrated.hash;
+          nextSalt = migrated.salt;
+          updateDoc(doc(db, "users", userDoc.id), {
+            passwordHash: nextHash,
+            passwordSalt: nextSalt,
+            password: deleteField(),
+            lastSeen: new Date().toISOString()
+          }).catch(() => {});
+        } else {
+          updateDoc(doc(db, "users", userDoc.id), {
+            lastSeen: new Date().toISOString()
+          }).catch(() => {});
+        }
+
+        const assignedBusinessId = userData.businessId || "main-business";
+        let resolvedBusinessId = assignedBusinessId;
+        if (globalSuper) {
+          const savedAdminShop = typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SHOP_KEY) : null;
+          resolvedBusinessId = savedAdminShop || assignedBusinessId;
+        } else {
+          // Strict Shop Isolation: Non-super-admin users MUST only enter their assigned shop
+          if (typeof window !== "undefined") {
+            localStorage.removeItem(ACTIVE_SHOP_KEY);
+          }
+        }
+
+        const rawPerms: string[] = Array.isArray(userData.permissions) && userData.permissions.length > 0
+          ? userData.permissions
+          : (shopAdmin ? ADMIN_DEFAULT_PERMISSIONS : ["pos", "sales", "reports"]);
+        const resolvedPerms = shopAdmin
+          ? ADMIN_DEFAULT_PERMISSIONS
           : rawPerms.filter(p => p !== "settings" && p !== "approvals");
 
         const loggedUser: User = {
@@ -319,7 +478,9 @@ export const api = {
           name: userData.name || "ব্যবহারকারী",
           email: userData.email,
           phone: userData.phone || "",
-          role: superAdmin ? "admin" : (userData.role || "salesman"),
+          image: userData.image || "",
+          role: shopAdmin ? "admin" : (userData.role || "salesman"),
+          isSuperAdmin: globalSuper,
           permissions: resolvedPerms,
           businessId: resolvedBusinessId,
           createdAt: userData.createdAt || new Date().toISOString(),
@@ -328,67 +489,62 @@ export const api = {
 
         setApiBusinessId(resolvedBusinessId);
 
-        // Update lastSeen in background
-        try {
-          await updateDoc(doc(db, "users", userDoc.id), {
-            lastSeen: new Date().toISOString()
-          });
-        } catch {}
+        // Cache hashed verifier locally inside this shop's isolated cache for offline login
+        const shopCache = getLocalCache(resolvedBusinessId);
+        const existingIdx = shopCache.users.findIndex((u: any) => u.id === loggedUser.id);
+        const offlineRecord = { ...loggedUser, passwordHash: nextHash, passwordSalt: nextSalt };
+        if (existingIdx !== -1) {
+          shopCache.users[existingIdx] = offlineRecord;
+        } else {
+          shopCache.users.push(offlineRecord);
+        }
+        saveLocalCache({ users: shopCache.users }, resolvedBusinessId);
 
-        return loggedUser;
+        return stripSensitiveUserFields(loggedUser);
       }
     } catch (fsErr: any) {
       if (fsErr.message?.includes("ভুল পাসওয়ার্ড")) throw fsErr;
-      console.warn("Firestore login query failed, checking fallback:", fsErr);
+      console.warn("Firestore login query failed, checking offline shop caches:", fsErr);
     }
 
-    // Default Super Admin fallback (same email & password works across all shops)
-    if (
-      (cleanEmail === "mominkhan051220@gmail.com" || cleanEmail === "md.momin.khan7579@gmail.com") && 
-      (cleanPass === "Momin1234@" || cleanPass === "123456")
-    ) {
-      const savedAdminShop = typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SHOP_KEY) : null;
-      const targetBizId = savedAdminShop || "main-business";
-      const adminUser: User = {
-        id: "admin-1",
-        name: "মোঃ মমিন আলী",
-        email: cleanEmail,
-        phone: "01741456838",
-        role: "admin",
-        permissions: defaultDbData.users[0].permissions,
-        businessId: targetBizId,
-        createdAt: new Date().toISOString(),
-        lastSeen: new Date().toISOString()
-      };
-      setApiBusinessId(targetBizId);
-      // Ensure it is in Firestore for future cross-browser lookups
-      try {
-        await setDoc(doc(db, "users", "admin-1"), {
-          ...adminUser,
-          password: cleanPass
-        }, { merge: true });
-      } catch {}
-      return adminUser;
-    }
-
-    // Fallback to local cache
-    const cache = getLocalCache();
-    const found = cache.users.find(u => u.email.toLowerCase() === cleanEmail);
-    if (found) {
-      if (found.password && found.password !== cleanPass) {
-        throw new Error("ভুল পাসওয়ার্ড। আবার চেষ্টা করুন।");
+    // Offline fallback across all isolated shop localStorage caches
+    if (typeof window !== "undefined") {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith(LOCAL_DB_KEY)) continue;
+        try {
+          const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+          const usersArr: any[] = Array.isArray(parsed.users) ? parsed.users : [];
+          const found = usersArr.find(u => (u.email || "").toLowerCase().trim() === cleanEmail);
+          if (found) {
+            const valid = await verifyUserCredential(found, cleanPass);
+            if (!valid) {
+              throw new Error("ভুল পাসওয়ার্ড। আবার চেষ্টা করুন।");
+            }
+            const globalSuper = isGlobalSuperAdmin(found);
+            const shopAdmin = isShopAdmin(found);
+            const assignedBizId = found.businessId || "main-business";
+            const savedAdminShop = localStorage.getItem(ACTIVE_SHOP_KEY);
+            const resolvedBizId = globalSuper ? (savedAdminShop || assignedBizId) : assignedBizId;
+            if (!globalSuper) {
+              localStorage.removeItem(ACTIVE_SHOP_KEY);
+            }
+            setApiBusinessId(resolvedBizId);
+            const safeFound = stripSensitiveUserFields(found);
+            return {
+              ...safeFound,
+              role: shopAdmin ? "admin" : safeFound.role,
+              isSuperAdmin: globalSuper,
+              businessId: resolvedBizId,
+              permissions: shopAdmin
+                ? ADMIN_DEFAULT_PERMISSIONS
+                : (safeFound.permissions || []).filter((p: string) => p !== "settings" && p !== "approvals")
+            } as User;
+          }
+        } catch (innerErr: any) {
+          if (innerErr?.message?.includes("ভুল পাসওয়ার্ড")) throw innerErr;
+        }
       }
-      const { password: _, ...userSafe } = found;
-      const superAdmin = isSuperAdminUser(userSafe);
-      const savedAdminShop = typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SHOP_KEY) : null;
-      const resolvedBizId = superAdmin ? (savedAdminShop || userSafe.businessId || "main-business") : (userSafe.businessId || "main-business");
-      setApiBusinessId(resolvedBizId);
-      return {
-        ...userSafe,
-        role: superAdmin ? "admin" : userSafe.role,
-        businessId: resolvedBizId,
-        permissions: superAdmin ? defaultDbData.users[0].permissions : (userSafe.permissions || []).filter((p: string) => p !== "settings" && p !== "approvals")
-      } as unknown as User;
     }
 
     throw new Error("ভুল ইমেইল বা পাসওয়ার্ড প্রদান করা হয়েছে।");
@@ -396,48 +552,71 @@ export const api = {
 
   verifySession: async (userId: string, email: string): Promise<User | null> => {
     try {
-      const snap = await getDoc(doc(db, "users", userId));
+      const snap = await withFirestoreTimeout(getDoc(doc(db, "users", userId)), 5000);
       if (snap.exists()) {
         const data = snap.data();
         if (data.email?.toLowerCase() === email.toLowerCase()) {
-          const { password: _, ...userSafe } = data;
-          const superAdmin = isSuperAdminUser({ id: snap.id, email: data.email, role: data.role });
-          const savedAdminShop = typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SHOP_KEY) : null;
-          const resolvedBusinessId = superAdmin
-            ? (savedAdminShop || userSafe.businessId || "main-business")
-            : (userSafe.businessId || "main-business");
-          const rawPerms: string[] = userSafe.permissions || defaultDbData.users[0].permissions;
-          const resolvedPerms = superAdmin
-            ? defaultDbData.users[0].permissions
+          const globalSuper = isGlobalSuperAdmin({ id: snap.id, ...data } as any);
+          const shopAdmin = isShopAdmin({ id: snap.id, ...data } as any);
+          const assignedBizId = data.businessId || "main-business";
+
+          let resolvedBusinessId = assignedBizId;
+          if (globalSuper) {
+            const savedAdminShop = typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SHOP_KEY) : null;
+            resolvedBusinessId = savedAdminShop || assignedBizId;
+          } else if (typeof window !== "undefined") {
+            localStorage.removeItem(ACTIVE_SHOP_KEY);
+          }
+
+          const rawPerms: string[] = Array.isArray(data.permissions) && data.permissions.length > 0
+            ? data.permissions
+            : (shopAdmin ? ADMIN_DEFAULT_PERMISSIONS : ["pos", "sales", "reports"]);
+          const resolvedPerms = shopAdmin
+            ? ADMIN_DEFAULT_PERMISSIONS
             : rawPerms.filter(p => p !== "settings" && p !== "approvals");
-          return {
+
+          return stripSensitiveUserFields({
             id: snap.id,
-            ...userSafe,
-            role: superAdmin ? "admin" : (userSafe.role || "salesman"),
+            ...data,
+            role: shopAdmin ? "admin" : (data.role || "salesman"),
+            isSuperAdmin: globalSuper,
             businessId: resolvedBusinessId,
             permissions: resolvedPerms
-          } as User;
+          });
         }
       }
     } catch (e) {
       console.warn("Session verification via firestore failed:", e);
     }
 
-    // Cache verification
-    const cache = getLocalCache();
-    const found = cache.users.find(u => u.id === userId && u.email.toLowerCase() === email.toLowerCase());
-    if (found) {
-      const { password: _, ...userSafe } = found;
-      const superAdmin = isSuperAdminUser(userSafe);
-      const savedAdminShop = typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SHOP_KEY) : null;
-      const resolvedBusinessId = superAdmin
-        ? (savedAdminShop || userSafe.businessId || "main-business")
-        : (userSafe.businessId || "main-business");
-      return {
-        ...userSafe,
-        role: superAdmin ? "admin" : userSafe.role,
-        businessId: resolvedBusinessId
-      } as unknown as User;
+    // Cache verification across isolated shop caches
+    if (typeof window !== "undefined") {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith(LOCAL_DB_KEY)) continue;
+        try {
+          const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+          const usersArr: any[] = Array.isArray(parsed.users) ? parsed.users : [];
+          const found = usersArr.find(u => u.id === userId && u.email?.toLowerCase() === email.toLowerCase());
+          if (found) {
+            const globalSuper = isGlobalSuperAdmin(found);
+            const shopAdmin = isShopAdmin(found);
+            const assignedBizId = found.businessId || "main-business";
+            const savedAdminShop = localStorage.getItem(ACTIVE_SHOP_KEY);
+            const resolvedBusinessId = globalSuper ? (savedAdminShop || assignedBizId) : assignedBizId;
+            if (!globalSuper) {
+              localStorage.removeItem(ACTIVE_SHOP_KEY);
+            }
+            const safeFound = stripSensitiveUserFields(found);
+            return {
+              ...safeFound,
+              role: shopAdmin ? "admin" : safeFound.role,
+              isSuperAdmin: globalSuper,
+              businessId: resolvedBusinessId
+            } as User;
+          }
+        } catch {}
+      }
     }
     return null;
   },
@@ -450,15 +629,36 @@ export const api = {
     const cur = getCurrentUser();
     if (!cur) throw new Error("অননুমোদিত অনুরোধ।");
 
+    const nextPass = (passwords.newPassword || "").trim();
+    if (nextPass.length < 6) {
+      throw new Error("নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।");
+    }
+
+    const { hash, salt } = await hashPassword(nextPass);
+
     try {
       const userRef = doc(db, "users", cur.id);
       const snap = await getDoc(userRef);
       if (snap.exists()) {
         const data = snap.data();
-        if (data.password && data.password !== passwords.currentPassword) {
+        const valid = await verifyUserCredential(data, passwords.currentPassword);
+        if (!valid) {
           throw new Error("বর্তমান পাসওয়ার্ড সঠিক নয়।");
         }
-        await updateDoc(userRef, { password: passwords.newPassword });
+        await updateDoc(userRef, {
+          passwordHash: hash,
+          passwordSalt: salt,
+          password: deleteField()
+        });
+
+        const cache = getLocalCache(cur.businessId || currentBusinessId);
+        const u = cache.users.find(x => x.id === cur.id);
+        if (u) {
+          delete u.password;
+          u.passwordHash = hash;
+          u.passwordSalt = salt;
+          saveLocalCache(cache, cur.businessId || currentBusinessId);
+        }
         return true;
       }
     } catch (e: any) {
@@ -466,20 +666,55 @@ export const api = {
       console.warn("Firestore changePassword error:", e);
     }
 
-    const cache = getLocalCache();
+    const cache = getLocalCache(cur.businessId || currentBusinessId);
     const u = cache.users.find(x => x.id === cur.id);
     if (!u) throw new Error("ব্যবহারকারী পাওয়া যায়নি।");
-    if (u.password !== passwords.currentPassword) {
+    const valid = await verifyUserCredential(u, passwords.currentPassword);
+    if (!valid) {
       throw new Error("বর্তমান পাসওয়ার্ড সঠিক নয়।");
     }
-    u.password = passwords.newPassword;
-    saveLocalCache(cache);
+    delete u.password;
+    u.passwordHash = hash;
+    u.passwordSalt = salt;
+    saveLocalCache(cache, cur.businessId || currentBusinessId);
     return true;
   },
 
   adminResetPassword: async (userId: string, newPassword: string): Promise<boolean> => {
+    const cur = getCurrentUser();
+    if (!isShopAdmin(cur)) {
+      throw new Error("শুধুমাত্র অ্যাডমিন পাসওয়ার্ড রিসেট করতে পারবেন।");
+    }
+    const cleanNewPass = (newPassword || "").trim();
+    if (cleanNewPass.length < 6) {
+      throw new Error("নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।");
+    }
+
+    // Enforce shop boundaries & super-admin protection
     try {
-      await updateDoc(doc(db, "users", userId), { password: newPassword });
+      const targetSnap = await getDoc(doc(db, "users", userId));
+      if (targetSnap.exists()) {
+        const targetData = targetSnap.data() as any;
+        const targetIsSuper = isGlobalSuperAdmin({ id: targetSnap.id, ...targetData });
+        if (targetIsSuper && !isGlobalSuperAdmin(cur)) {
+          throw new Error("সুপার অ্যাডমিনের পাসওয়ার্ড পরিবর্তন করার অনুমতি আপনার নেই।");
+        }
+        if (!isGlobalSuperAdmin(cur) && (targetData.businessId || "main-business") !== currentBusinessId) {
+          throw new Error("অন্য শপের ইউজারের পাসওয়ার্ড পরিবর্তন করা যাবে না।");
+        }
+      }
+    } catch (chkErr: any) {
+      if (chkErr?.message?.includes("অনুমতি") || chkErr?.message?.includes("অন্য শপ")) throw chkErr;
+    }
+
+    const { hash, salt } = await hashPassword(cleanNewPass);
+
+    try {
+      await updateDoc(doc(db, "users", userId), {
+        passwordHash: hash,
+        passwordSalt: salt,
+        password: deleteField()
+      });
     } catch (e) {
       console.warn("Firestore adminResetPassword error:", e);
     }
@@ -487,50 +722,53 @@ export const api = {
     const cache = getLocalCache();
     const u = cache.users.find(x => x.id === userId);
     if (u) {
-      u.password = newPassword;
+      delete u.password;
+      u.passwordHash = hash;
+      u.passwordSalt = salt;
       saveLocalCache(cache);
     }
     return true;
   },
 
-  // --- Users (Isolated per Shop, while Super Admin is accessible across all shops) ---
+  // --- Users (Strictly Isolated per Shop — zero cross-shop leakage or plaintext passwords) ---
   getUsers: async (): Promise<User[]> => {
-    const filterShopUsers = (list: User[]) =>
-      list.filter(u => isSuperAdminUser(u) || (u.businessId || "main-business") === currentBusinessId);
+    const filterShopUsers = (list: any[]): User[] =>
+      list
+        .filter(u => (u.businessId || "main-business") === currentBusinessId)
+        .map(stripSensitiveUserFields);
 
     try {
       const snap = await getDocs(collection(db, "users"));
-      const allUsers: User[] = [];
+      const rawShopUsers: any[] = [];
       snap.forEach(d => {
         const data = d.data();
-        allUsers.push({
-          id: d.id,
-          name: data.name || "ব্যবহারকারী",
-          email: data.email || "",
-          phone: data.phone || "",
-          password: data.password || "",
-          role: data.role || "salesman",
-          permissions: data.permissions || ["pos", "sales", "reports"],
-          businessId: data.businessId || "main-business",
-          createdAt: data.createdAt || new Date().toISOString(),
-          lastSeen: data.lastSeen || new Date().toISOString()
-        });
-      });
-      if (allUsers.length > 0) {
-        const shopUsers = filterShopUsers(allUsers);
-        saveLocalCache({ users: shopUsers as any });
-        return shopUsers;
-      } else {
-        // Seed default admin in Firestore
-        for (const u of defaultDbData.users) {
-          await setDoc(doc(db, "users", u.id), u);
+        if ((data.businessId || "main-business") === currentBusinessId) {
+          rawShopUsers.push({
+            id: d.id,
+            name: data.name || "ব্যবহারকারী",
+            email: data.email || "",
+            phone: data.phone || "",
+            role: data.role || "salesman",
+            isSuperAdmin: data.isSuperAdmin === true || d.id === "admin-1",
+            permissions: data.permissions || ["pos", "sales", "reports"],
+            businessId: data.businessId || "main-business",
+            passwordHash: data.passwordHash,
+            passwordSalt: data.passwordSalt,
+            createdAt: data.createdAt || new Date().toISOString(),
+            lastSeen: data.lastSeen || new Date().toISOString()
+          });
         }
-        return defaultDbData.users as unknown as User[];
+      });
+
+      if (rawShopUsers.length > 0) {
+        saveLocalCache({ users: rawShopUsers });
+        return filterShopUsers(rawShopUsers);
       }
+      return [];
     } catch (err) {
       console.warn("Firestore getUsers failed, using cache:", err);
       const cache = getLocalCache();
-      return filterShopUsers(cache.users as User[]);
+      return filterShopUsers(cache.users || []);
     }
   },
 
@@ -538,27 +776,28 @@ export const api = {
     try {
       const colRef = collection(db, "users");
       return onSnapshot(colRef, (snap) => {
-        const allUsers: User[] = [];
+        const rawShopUsers: any[] = [];
         snap.forEach(d => {
           const data = d.data();
-          allUsers.push({
-            id: d.id,
-            name: data.name || "ব্যবহারকারী",
-            email: data.email || "",
-            phone: data.phone || "",
-            password: data.password || "",
-            role: data.role || "salesman",
-            permissions: data.permissions || ["pos", "sales", "reports"],
-            businessId: data.businessId || "main-business",
-            createdAt: data.createdAt || new Date().toISOString(),
-            lastSeen: data.lastSeen || new Date().toISOString()
-          });
+          if ((data.businessId || "main-business") === currentBusinessId) {
+            rawShopUsers.push({
+              id: d.id,
+              name: data.name || "ব্যবহারকারী",
+              email: data.email || "",
+              phone: data.phone || "",
+              role: data.role || "salesman",
+              isSuperAdmin: data.isSuperAdmin === true || d.id === "admin-1",
+              permissions: data.permissions || ["pos", "sales", "reports"],
+              businessId: data.businessId || "main-business",
+              passwordHash: data.passwordHash,
+              passwordSalt: data.passwordSalt,
+              createdAt: data.createdAt || new Date().toISOString(),
+              lastSeen: data.lastSeen || new Date().toISOString()
+            });
+          }
         });
-        const shopUsers = allUsers.filter(
-          u => isSuperAdminUser(u) || (u.businessId || "main-business") === currentBusinessId
-        );
-        saveLocalCache({ users: shopUsers as any });
-        callback(shopUsers);
+        saveLocalCache({ users: rawShopUsers });
+        callback(rawShopUsers.map(stripSensitiveUserFields));
       }, (error) => {
         console.warn("onSnapshot users error:", error);
       });
@@ -572,6 +811,10 @@ export const api = {
     if (!cleanEmail) {
       throw new Error("ইমেইল প্রদান করা আবশ্যক।");
     }
+    const rawPass = (user.password || "").trim();
+    if (rawPass.length < 6) {
+      throw new Error("ইউজারের পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।");
+    }
 
     // Check across all shops in Firestore so no two users share an email across shops
     try {
@@ -584,66 +827,124 @@ export const api = {
       if (dupErr.message?.includes("ইতিমধ্যে")) throw dupErr;
     }
 
+    const { hash, salt } = await hashPassword(rawPass);
     const newId = user.id || `user_${Date.now()}`;
-    const rawPerms = user.permissions || (user.role === "admin" ? defaultDbData.users[0].permissions : ["pos", "sales", "reports"]);
+    const rawPerms = user.permissions || (user.role === "admin" ? ADMIN_DEFAULT_PERMISSIONS : ["pos", "sales", "reports"]);
     const cleanPerms = user.role === "admin" ? rawPerms : rawPerms.filter(p => p !== "settings" && p !== "approvals");
 
     const newUserRecord: any = {
       id: newId,
       name: user.name || "নতুন ব্যবহারকারী",
       email: cleanEmail,
-      password: user.password || "123456",
       phone: user.phone || "",
       image: user.image || "",
-      role: user.role || "salesman",
+      role: user.role === "admin" ? "admin" : (user.role || "salesman"),
+      isSuperAdmin: false,
       permissions: cleanPerms,
       businessId: currentBusinessId,
+      passwordHash: hash,
+      passwordSalt: salt,
       createdAt: new Date().toISOString(),
       lastSeen: new Date().toISOString()
     };
 
-    // Save to Firestore
     try {
       await setDoc(doc(db, "users", newId), cleanForFirestore(newUserRecord));
     } catch (err) {
       console.warn("Firestore createUser failed:", err);
     }
 
-    // Save to Cache
     const cache = getLocalCache();
     cache.users.push(newUserRecord);
     saveLocalCache(cache);
 
-    syncEntityToGoogleSheets('user', newUserRecord, 'upsert', currentBusinessId);
+    const safeUser = stripSensitiveUserFields(newUserRecord);
+    syncEntityToGoogleSheets('user', safeUser, 'upsert', currentBusinessId);
 
-    const { password: _, ...userSafe } = newUserRecord;
-    return userSafe as User;
+    return safeUser;
   },
 
   updateUser: async (id: string, user: Partial<User>): Promise<User> => {
+    const cur = getCurrentUser();
+    if (!isShopAdmin(cur) && cur?.id !== id) {
+      throw new Error("এই ইউজার প্রোফাইল পরিবর্তনের অনুমতি আপনার নেই।");
+    }
+
+    const updatePayload: any = { ...user };
+    // Never allow client updates to escalate isSuperAdmin or businessId arbitrarily unless Global Super Admin
+    if (!isGlobalSuperAdmin(cur)) {
+      delete updatePayload.isSuperAdmin;
+      delete updatePayload.businessId;
+    }
+
+    if (typeof user.password === "string" && user.password.trim().length > 0) {
+      if (user.password.trim().length < 6) {
+        throw new Error("পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।");
+      }
+      const { hash, salt } = await hashPassword(user.password.trim());
+      updatePayload.passwordHash = hash;
+      updatePayload.passwordSalt = salt;
+      updatePayload.password = deleteField();
+    } else {
+      delete updatePayload.password;
+    }
+
     try {
-      await updateDoc(doc(db, "users", id), user as any);
-    } catch (err) {
+      const targetSnap = await getDoc(doc(db, "users", id));
+      if (targetSnap.exists()) {
+        const targetData = targetSnap.data() as any;
+        if (isGlobalSuperAdmin({ id, ...targetData }) && !isGlobalSuperAdmin(cur)) {
+          throw new Error("সুপার অ্যাডমিনের তথ্য পরিবর্তন করার অনুমতি নেই।");
+        }
+        if (!isGlobalSuperAdmin(cur) && (targetData.businessId || "main-business") !== currentBusinessId) {
+          throw new Error("অন্য শপের ইউজার সম্পাদনা করা যাবে না।");
+        }
+      }
+      await updateDoc(doc(db, "users", id), cleanForFirestore(updatePayload));
+    } catch (err: any) {
+      if (err?.message?.includes("অনুমতি") || err?.message?.includes("অন্য শপ")) throw err;
       console.warn("Firestore updateUser failed:", err);
     }
 
     const cache = getLocalCache();
     const idx = cache.users.findIndex(u => u.id === id);
     if (idx !== -1) {
-      cache.users[idx] = { ...cache.users[idx], ...user };
+      const { password: _drop, ...cachePatch } = updatePayload;
+      cache.users[idx] = { ...cache.users[idx], ...cachePatch };
+      delete cache.users[idx].password;
       saveLocalCache(cache);
-      syncEntityToGoogleSheets('user', cache.users[idx], 'upsert', currentBusinessId);
-      const { password: _, ...userSafe } = cache.users[idx];
-      return userSafe as unknown as User;
+      const safeUser = stripSensitiveUserFields(cache.users[idx]);
+      syncEntityToGoogleSheets('user', safeUser, 'upsert', currentBusinessId);
+      return safeUser;
     }
-    syncEntityToGoogleSheets('user', { id, ...user }, 'upsert', currentBusinessId);
-    return user as User;
+    const safeReturned = stripSensitiveUserFields({ id, ...updatePayload });
+    syncEntityToGoogleSheets('user', safeReturned, 'upsert', currentBusinessId);
+    return safeReturned;
   },
 
   deleteUser: async (id: string): Promise<boolean> => {
+    const cur = getCurrentUser();
+    if (!isShopAdmin(cur)) {
+      throw new Error("শুধুমাত্র অ্যাডমিন ইউজার ডিলিট করতে পারবেন।");
+    }
+    if (id === "admin-1") {
+      throw new Error("প্রধান সুপার অ্যাডমিন অ্যাকাউন্ট মুছে ফেলা যাবে না।");
+    }
+
     try {
+      const targetSnap = await getDoc(doc(db, "users", id));
+      if (targetSnap.exists()) {
+        const targetData = targetSnap.data() as any;
+        if (isGlobalSuperAdmin({ id, ...targetData })) {
+          throw new Error("প্রধান সুপার অ্যাডমিন অ্যাকাউন্ট মুছে ফেলা যাবে না।");
+        }
+        if (!isGlobalSuperAdmin(cur) && (targetData.businessId || "main-business") !== currentBusinessId) {
+          throw new Error("অন্য শপের ইউজার মুছে ফেলা যাবে না।");
+        }
+      }
       await deleteDoc(doc(db, "users", id));
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.message?.includes("মুছে ফেলা যাবে না")) throw err;
       console.warn("Firestore deleteUser failed:", err);
     }
 
@@ -852,7 +1153,13 @@ export const api = {
     }
 
     if (!includeTemporary) {
-      salesList = salesList.filter(s => !s.isTemporary && s.approvalStatus !== 'pending' && s.approvalStatus !== 'rejected');
+      salesList = salesList.filter(
+        s =>
+          !s.isTemporary &&
+          s.approvalStatus !== 'pending' &&
+          s.approvalStatus !== 'rejected' &&
+          !String(s.invoiceNo || '').startsWith('TMP-')
+      );
     }
 
     // Role isolation
@@ -866,32 +1173,68 @@ export const api = {
   },
 
   subscribeSales: (callback: (sales: Sale[]) => void, userId?: string, includeTemporary: boolean = false): (() => void) => {
+    const filterAndEmit = (rawList: Sale[]) => {
+      const curUser = getCurrentUser();
+      let salesList = [...(rawList || [])];
+      salesList.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+
+      if (!includeTemporary) {
+        salesList = salesList.filter(
+          s =>
+            !s.isTemporary &&
+            s.approvalStatus !== 'pending' &&
+            s.approvalStatus !== 'rejected' &&
+            !String(s.invoiceNo || '').startsWith('TMP-')
+        );
+      }
+
+      if (curUser && curUser.role === "salesman") {
+        callback(salesList.filter(s => s.userId === curUser.id || s.createdBy === curUser.id));
+      } else if (userId) {
+        callback(salesList.filter(s => s.userId === userId || s.createdBy === userId));
+      } else {
+        callback(salesList);
+      }
+    };
+
+    filterAndEmit(getLocalCache().sales || []);
+
+    let unsubFs = () => {};
     try {
       const colRef = collection(db, "businesses", currentBusinessId, "sales");
-      return onSnapshot(colRef, (snap) => {
-        const curUser = getCurrentUser();
+      unsubFs = onSnapshot(colRef, (snap) => {
         let salesList: Sale[] = [];
         snap.forEach(d => salesList.push({ id: d.id, ...d.data() } as Sale));
-        salesList.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-        saveLocalCache({ sales: salesList });
-
-        if (!includeTemporary) {
-          salesList = salesList.filter(s => !s.isTemporary && s.approvalStatus !== 'pending' && s.approvalStatus !== 'rejected');
-        }
-
-        if (curUser && curUser.role === "salesman") {
-          callback(salesList.filter(s => s.userId === curUser.id || s.createdBy === curUser.id));
-        } else if (userId) {
-          callback(salesList.filter(s => s.userId === userId || s.createdBy === userId));
-        } else {
-          callback(salesList);
-        }
+        const cache = getLocalCache();
+        const existingMap = new Map<string, Sale>();
+        salesList.forEach(item => existingMap.set(item.id, item));
+        (cache.sales || []).forEach(localItem => {
+          if (!existingMap.has(localItem.id)) {
+            existingMap.set(localItem.id, localItem);
+          }
+        });
+        const combined = Array.from(existingMap.values());
+        combined.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        saveLocalCache({ sales: combined });
+        filterAndEmit(combined);
       }, (error) => {
         console.warn("onSnapshot sales error:", error);
       });
-    } catch (e) {
-      return () => {};
+    } catch {}
+
+    const handleLocalSalesUpdate = () => {
+      filterAndEmit(getLocalCache().sales || []);
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("sales-updated", handleLocalSalesUpdate);
     }
+
+    return () => {
+      unsubFs();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("sales-updated", handleLocalSalesUpdate);
+      }
+    };
   },
 
   createSale: async (sale: Partial<Sale>): Promise<Sale> => {
@@ -926,7 +1269,7 @@ export const api = {
           if (pIdx !== -1) {
             if (isOtherProduct(cache.products[pIdx])) continue;
             cache.products[pIdx].stock = Math.max(0, (Number(cache.products[pIdx].stock) || 0) - (Number(item.quantity) || 1));
-            syncEntityToGoogleSheets('product', cache.products[pIdx], 'upsert');
+            syncEntityToGoogleSheets('product', cache.products[pIdx], 'upsert', currentBusinessId);
           }
           try {
             const pDoc = await getDoc(doc(db, "businesses", currentBusinessId, "products", prodId));
@@ -936,6 +1279,11 @@ export const api = {
                 const currentStock = Number(pData.stock) || 0;
                 const newStock = Math.max(0, currentStock - (Number(item.quantity) || 1));
                 await updateDoc(doc(db, "businesses", currentBusinessId, "products", prodId), { stock: newStock });
+                if (pIdx === -1) {
+                  const fullProd = { id: pDoc.id, ...pData, stock: newStock } as Product;
+                  cache.products.push(fullProd);
+                  syncEntityToGoogleSheets('product', fullProd, 'upsert', currentBusinessId);
+                }
               }
             }
           } catch {}
@@ -950,6 +1298,17 @@ export const api = {
       (newSale.customerName && c.name && c.name.trim().toLowerCase() === newSale.customerName.trim().toLowerCase())
     );
 
+    // Fallback to Firestore if customer is not yet in local cache (e.g. after switching to 2nd shop)
+    if (!matchedCustomer && newSale.customerId && newSale.customerId !== "walking") {
+      try {
+        const custSnap = await getDoc(doc(db, "businesses", currentBusinessId, "customers", newSale.customerId));
+        if (custSnap.exists()) {
+          matchedCustomer = { id: custSnap.id, ...custSnap.data() } as Customer;
+          cache.customers.push(matchedCustomer);
+        }
+      } catch {}
+    }
+
     if (matchedCustomer) {
       newSale.customerId = matchedCustomer.id;
       matchedCustomer.totalSpent = (Number(matchedCustomer.totalSpent) || 0) + payable;
@@ -960,7 +1319,7 @@ export const api = {
           dueAmount: matchedCustomer.dueAmount
         });
       } catch {}
-      syncEntityToGoogleSheets('customer', matchedCustomer, 'upsert');
+      syncEntityToGoogleSheets('customer', matchedCustomer, 'upsert', currentBusinessId);
     } else if (newSale.customerName && newSale.customerName !== 'Walk-in Customer' && (due !== 0 || newSale.customerPhone)) {
       // Auto-create customer if they have due/advance or real identity
       const newCustId = `cust_${Date.now()}`;
@@ -971,6 +1330,7 @@ export const api = {
         address: newSale.customerAddress || "",
         dueAmount: due,
         totalSpent: payable,
+        createdBy: newSale.createdBy || curUser?.id,
         createdAt: new Date().toISOString()
       };
       newSale.customerId = newCustId;
@@ -978,31 +1338,118 @@ export const api = {
       try {
         await setDoc(doc(db, "businesses", currentBusinessId, "customers", newCustId), newCust);
       } catch {}
-      syncEntityToGoogleSheets('customer', newCust, 'upsert');
+      syncEntityToGoogleSheets('customer', newCust, 'upsert', currentBusinessId);
     }
 
     // 3. Save Sale Doc
     try {
-      await setDoc(doc(db, "businesses", currentBusinessId, "sales", id), newSale);
+      await setDoc(doc(db, "businesses", currentBusinessId, "sales", id), cleanForFirestore(newSale));
     } catch (e) {
       console.warn("Firestore createSale failed:", e);
     }
 
-    cache.sales.unshift(newSale);
+    cache.sales = [newSale, ...(cache.sales || []).filter(s => s.id !== id)];
     saveLocalCache(cache);
-    syncEntityToGoogleSheets('sale', newSale, 'upsert');
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("sales-updated", { detail: newSale }));
+    }
+    syncEntityToGoogleSheets('sale', newSale, 'upsert', currentBusinessId);
     return newSale;
   },
 
   deleteSale: async (id: string): Promise<boolean> => {
+    const cache = getLocalCache();
+    let saleToDelete = cache.sales.find(s => s.id === id || s.invoiceNo === id);
+    if (!saleToDelete) {
+      try {
+        const snap = await getDoc(doc(db, "businesses", currentBusinessId, "sales", id));
+        if (snap.exists()) {
+          saleToDelete = { id: snap.id, ...snap.data() } as Sale;
+        }
+      } catch {}
+    }
+
+    const targetId = saleToDelete?.id || id;
+    const isConfirmedSale =
+      saleToDelete &&
+      !saleToDelete.isTemporary &&
+      saleToDelete.approvalStatus !== "pending" &&
+      saleToDelete.approvalStatus !== "rejected" &&
+      !String(saleToDelete.invoiceNo || "").startsWith("TMP-");
+
+    // 1. If this was a confirmed sale, restore product stock and reverse customer due/spent
+    if (saleToDelete && isConfirmedSale) {
+      if (Array.isArray(saleToDelete.items)) {
+        for (const item of saleToDelete.items) {
+          if (isOtherProduct(item)) continue;
+          const prodId = item.productId || (item as any).id;
+          const prodIdx = cache.products.findIndex(p => p.id === prodId);
+          if (prodIdx !== -1 && !isOtherProduct(cache.products[prodIdx])) {
+            const restoredStock = (Number(cache.products[prodIdx].stock) || 0) + (Number(item.quantity) || 0);
+            cache.products[prodIdx].stock = restoredStock;
+            try {
+              await updateDoc(doc(db, "businesses", currentBusinessId, "products", prodId), {
+                stock: restoredStock
+              });
+            } catch {}
+            syncEntityToGoogleSheets("product", cache.products[prodIdx], "upsert", currentBusinessId);
+          }
+        }
+      }
+
+      const cust = cache.customers.find(
+        c =>
+          (saleToDelete?.customerId && c.id === saleToDelete.customerId) ||
+          (saleToDelete?.customerPhone && c.phone && c.phone.trim() === saleToDelete.customerPhone.trim()) ||
+          (saleToDelete?.customerName && c.name && c.name.trim().toLowerCase() === saleToDelete.customerName.trim().toLowerCase())
+      );
+      if (cust) {
+        const payable = Number(saleToDelete.payableAmount ?? saleToDelete.totalAmount) || 0;
+        const saleDue = Number(saleToDelete.dueAmount) || 0;
+        cust.dueAmount = (Number(cust.dueAmount) || 0) - saleDue;
+        cust.totalSpent = Math.max(0, (Number(cust.totalSpent) || 0) - payable);
+        try {
+          await updateDoc(doc(db, "businesses", currentBusinessId, "customers", cust.id), {
+            dueAmount: cust.dueAmount,
+            totalSpent: cust.totalSpent
+          });
+        } catch {}
+        syncEntityToGoogleSheets("customer", cust, "upsert", currentBusinessId);
+      }
+    }
+
+    // 2. Delete the sale document from Firestore, local cache, and Google Sheets
     try {
-      await deleteDoc(doc(db, "businesses", currentBusinessId, "sales", id));
+      await deleteDoc(doc(db, "businesses", currentBusinessId, "sales", targetId));
     } catch (e) {
       console.warn("Firestore deleteSale failed:", e);
     }
-    const cache = getLocalCache();
-    cache.sales = cache.sales.filter(s => s.id !== id);
+    cache.sales = cache.sales.filter(s => s.id !== targetId && s.invoiceNo !== id);
     saveLocalCache(cache);
+    syncEntityToGoogleSheets("sale", { id: targetId, invoiceNo: saleToDelete?.invoiceNo }, "delete", currentBusinessId);
+    return true;
+  },
+
+  deleteApprovalRequest: async (requestId: string): Promise<boolean> => {
+    const cache = getLocalCache();
+    const req = (cache.approvalRequests || []).find(r => r.id === requestId);
+    try {
+      await deleteDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId));
+    } catch (e) {
+      console.warn("Firestore deleteApprovalRequest failed:", e);
+    }
+    // Also clean up any temporary pending draft sale with the same requestId
+    try {
+      await deleteDoc(doc(db, "businesses", currentBusinessId, "sales", requestId));
+    } catch {}
+    cache.approvalRequests = (cache.approvalRequests || []).filter(r => r.id !== requestId);
+    cache.sales = (cache.sales || []).filter(s => s.id !== requestId);
+    saveLocalCache(cache);
+    syncEntityToGoogleSheets("approval", { id: requestId, temporaryInvoiceNo: req?.temporaryInvoiceNo }, "delete", currentBusinessId);
+    syncEntityToGoogleSheets("sale", { id: requestId, invoiceNo: req?.temporaryInvoiceNo }, "delete", currentBusinessId);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("approval-requests-updated"));
+    }
     return true;
   },
 
@@ -1137,30 +1584,30 @@ export const api = {
     };
 
     // Sanitize objects to guarantee no undefined values throw Firestore error
-    const sanitizedSale = cleanForFirestore(tempSale);
     const sanitizedRequest = cleanForFirestore(newRequest);
 
-    // Save to Firestore approval_requests & sales (as draft)
+    // Save strictly to Firestore approval_requests (Sales Orders). It will only move to 'sales' (বিক্রয় লিস্ট) when confirmed!
     try {
       await setDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId), sanitizedRequest);
-      await setDoc(doc(db, "businesses", currentBusinessId, "sales", requestId), sanitizedSale);
     } catch (e) {
       console.error("Firestore createSaleRequest write failed:", e);
     }
 
     const cache = getLocalCache();
     cache.approvalRequests = [newRequest, ...(cache.approvalRequests || []).filter(r => r.id !== requestId)];
-    cache.sales = [tempSale, ...(cache.sales || []).filter(s => s.id !== requestId)];
+    // Ensure pending sales order is not sitting inside cache.sales
+    cache.sales = (cache.sales || []).filter(s => s.id !== requestId && s.invoiceNo !== tempInvNo);
     saveLocalCache(cache);
 
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent('approval-requests-updated', { detail: newRequest }));
+      window.dispatchEvent(new CustomEvent('sales-updated'));
     }
 
-    // Sync temporary sale draft to this shop's Google Sheet (without deducting stock)
-    syncEntityToGoogleSheets('sale', tempSale, 'upsert', currentBusinessId);
+    // Sync sales order request to this shop's Google Sheet 'বিক্রয় অর্ডার' tab (without deducting stock or polluting বিক্রয় ও মেমো)
+    syncEntityToGoogleSheets('approval', newRequest, 'upsert', currentBusinessId);
 
-    // Stock & Customer Due are UNTOUCHED!
+    // Stock & Customer Due are UNTOUCHED until confirmed!
     return { request: newRequest, sale: tempSale };
   },
 
@@ -1171,11 +1618,20 @@ export const api = {
     const amount = Number(data.amount) || 0;
 
     const cache = getLocalCache();
-    const cust = cache.customers.find(c => 
+    let cust = cache.customers.find(c => 
       c.id === data.customerId || 
       (c.phone && c.phone === data.customerId) || 
       (c.name && c.name.toLowerCase() === data.customerId.toLowerCase())
     );
+
+    if (!cust && data.customerId) {
+      try {
+        const custSnap = await getDoc(doc(db, "businesses", currentBusinessId, "customers", data.customerId));
+        if (custSnap.exists()) {
+          cust = { id: custSnap.id, ...custSnap.data() } as Customer;
+        }
+      } catch {}
+    }
 
     const newRequest: ApprovalRequest = {
       id: requestId,
@@ -1187,7 +1643,7 @@ export const api = {
       temporaryInvoiceNo: tempVoucherNo,
       createdAt: new Date().toISOString(),
       paymentData: {
-        customerId: data.customerId,
+        customerId: cust?.id || data.customerId,
         customerName: cust?.name || "ক্রেতা",
         customerPhone: cust?.phone || "",
         amount,
@@ -1212,14 +1668,16 @@ export const api = {
       window.dispatchEvent(new CustomEvent('approval-requests-updated', { detail: newRequest }));
     }
 
-    // Customer Due is UNTOUCHED!
+    syncEntityToGoogleSheets('approval', newRequest, 'upsert', currentBusinessId);
+
+    // Customer Due is UNTOUCHED until Admin approves!
     const receiptData = {
       name: cust?.name || "ক্রেতা",
       phone: cust?.phone || "",
       amount,
       type: 'customer' as const,
       dueRemaining: Number(cust?.dueAmount) || 0,
-      description: `খসড়া বকেয়া আদায় (ভাউচার: ${tempVoucherNo})`,
+      description: `খসড়া বকেয়া আদায় রিকুয়েস্ট (ভাউচার: ${tempVoucherNo} • অ্যাডমিন অনুমোদনের অপেক্ষায়)`,
       isTemporary: true
     };
 
@@ -1228,6 +1686,9 @@ export const api = {
 
   approveRequest: async (requestId: string): Promise<any> => {
     const curUser = getCurrentUser();
+    if (!isShopAdmin(curUser)) {
+      throw new Error("শুধুমাত্র অ্যাডমিন এই অনুরোধটি কনফার্ম করতে পারবেন।");
+    }
     const cache = getLocalCache();
     
     let req = cache.approvalRequests.find(r => r.id === requestId);
@@ -1255,11 +1716,19 @@ export const api = {
         throw new Error("বিক্রয়ের তথ্য অসম্পূর্ণ।");
       }
 
-      // Check stock availability (skip for 'অন্যান্য' / custom products)
+      // Check stock availability across local cache & Firestore (skip for 'অন্যান্য' / custom products)
       for (const item of saleData.items) {
         if (isOtherProduct(item)) continue;
         const prodId = item.productId || (item as any).id;
-        const currentProd = cache.products.find(p => p.id === prodId);
+        let currentProd = cache.products.find(p => p.id === prodId);
+        if (!currentProd && prodId) {
+          try {
+            const pSnap = await getDoc(doc(db, "businesses", currentBusinessId, "products", prodId));
+            if (pSnap.exists()) {
+              currentProd = { id: pSnap.id, ...pSnap.data() } as Product;
+            }
+          } catch {}
+        }
         if (currentProd && !isOtherProduct(currentProd) && (Number(currentProd.stock) || 0) < Number(item.quantity)) {
           throw new Error(`পণ্য "${item.name}" পর্যাপ্ত স্টকে নেই! বর্তমান স্টক: ${currentProd.stock}, প্রয়োজন: ${item.quantity}`);
         }
@@ -1269,7 +1738,7 @@ export const api = {
       const finalInvoiceNo = `INV-${Date.now().toString().slice(-6)}`;
       const finalSaleId = `sale_${Date.now()}`;
 
-      // Call createSale which deducts stock and updates customer balance!
+      // Call createSale which deducts stock, updates customer balance, and adds to বিক্রয় লিস্ট!
       const confirmedSale = await api.createSale({
         ...saleData,
         id: finalSaleId,
@@ -1279,18 +1748,22 @@ export const api = {
         approvalRequestId: requestId
       });
 
-      // Remove temporary sale document
+      // Remove any legacy temporary sale document if present
       try {
         await deleteDoc(doc(db, "businesses", currentBusinessId, "sales", requestId));
       } catch {}
-      cache.sales = cache.sales.filter(s => s.id !== requestId);
-      syncEntityToGoogleSheets('sale', { id: requestId, invoiceNo: req.temporaryInvoiceNo }, 'delete', currentBusinessId);
+      const latestCache = getLocalCache();
+      latestCache.sales = (latestCache.sales || []).filter(s => s.id !== requestId && s.invoiceNo !== req.temporaryInvoiceNo);
 
       // Update approval request
       req.status = 'approved';
       req.reviewedAt = reviewedAt;
       req.reviewedBy = reviewedBy;
       req.finalInvoiceNo = finalInvoiceNo;
+
+      latestCache.approvalRequests = (latestCache.approvalRequests || []).map(r =>
+        r.id === requestId ? { ...r, status: 'approved', reviewedAt, reviewedBy, finalInvoiceNo } : r
+      );
 
       try {
         await updateDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId), {
@@ -1301,10 +1774,27 @@ export const api = {
         });
       } catch {}
 
-      saveLocalCache(cache);
+      saveLocalCache(latestCache);
+      syncEntityToGoogleSheets('approval', req, 'upsert', currentBusinessId);
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent('approval-requests-updated'));
+        window.dispatchEvent(new CustomEvent('sales-updated', { detail: confirmedSale }));
       }
+
+      // Trigger Auto-SMS on Sales Order confirmation if enabled
+      try {
+        const smsConfig = await api.getSMSConfig();
+        if (smsConfig.autoSMS && confirmedSale.customerPhone) {
+          const cust = latestCache.customers.find(c => c.id === confirmedSale.customerId);
+          const finalBal = cust ? (Number(cust.dueAmount) || 0) : (Number(confirmedSale.dueAmount) || 0);
+          const balText = finalBal < 0 ? `ক্রেতা পাবে: ৳${Math.round(Math.abs(finalBal))}` : `বকেয়া: ৳${Math.round(finalBal)}`;
+          const message = `প্রিয় ${confirmedSale.customerName || 'ক্রেতা'}, আপনার শপিং এর জন্য ধন্যবাদ। ইনভয়েস: ${confirmedSale.invoiceNo}, মোট: ৳${Math.round(confirmedSale.payableAmount)}, পেইড: ৳${confirmedSale.paidAmount}, ${balText}।`;
+          await api.sendSMS(confirmedSale.customerPhone, message);
+        }
+      } catch (smsErr) {
+        console.warn("[Auto SMS on Order Confirm] Error:", smsErr);
+      }
+
       return { success: true, type: 'sale', sale: confirmedSale };
 
     } else if (req.type === 'due_payment') {
@@ -1313,7 +1803,7 @@ export const api = {
         throw new Error("পেমেন্টের তথ্য অসম্পূর্ণ।");
       }
 
-      // Deduct customer due and record payment
+      // Deduct customer due and record official payment receipt
       const payResult = await api.recordPayment(
         pData.customerId,
         pData.amount,
@@ -1321,21 +1811,32 @@ export const api = {
         pData.note ? `${pData.note} (অনুমোদিত রিকুয়েস্ট: ${req.temporaryInvoiceNo})` : `অনুমোদিত বকেয়া আদায় (${req.temporaryInvoiceNo})`
       );
 
+      const finalReceiptNo = payResult?.payment?.receiptNo || `PAY-${Date.now().toString().slice(-6)}`;
       req.status = 'approved';
       req.reviewedAt = reviewedAt;
       req.reviewedBy = reviewedBy;
+      req.finalInvoiceNo = finalReceiptNo;
+
+      // Read latestCache AFTER recordPayment so we never overwrite updated customer dueAmount or customerPayments!
+      const latestCache = getLocalCache();
+      latestCache.approvalRequests = (latestCache.approvalRequests || []).map(r =>
+        r.id === requestId ? { ...r, status: 'approved', reviewedAt, reviewedBy, finalInvoiceNo: finalReceiptNo } : r
+      );
 
       try {
         await updateDoc(doc(db, "businesses", currentBusinessId, "approval_requests", requestId), {
           status: 'approved',
           reviewedAt,
-          reviewedBy
+          reviewedBy,
+          finalInvoiceNo: finalReceiptNo
         });
       } catch {}
 
-      saveLocalCache(cache);
+      saveLocalCache(latestCache);
+      syncEntityToGoogleSheets('approval', req, 'upsert', currentBusinessId);
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent('approval-requests-updated'));
+        window.dispatchEvent(new CustomEvent('customer-payments-updated'));
       }
       return { success: true, type: 'due_payment', payment: payResult };
     }
@@ -1390,6 +1891,7 @@ export const api = {
     } catch {}
 
     saveLocalCache(cache);
+    syncEntityToGoogleSheets('approval', req, 'upsert', currentBusinessId);
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent('approval-requests-updated'));
     }
@@ -1526,22 +2028,53 @@ export const api = {
 
   recordPayment: async (customerId: string, amount: number, method: string = "cash", note?: string, date?: string): Promise<any> => {
     const payAmount = Number(amount) || 0;
+    const curUser = getCurrentUser();
+
+    // API-level Guard: Non-admin users (salesman/manager/accountant) in ANY shop can never directly deduct due; redirect to approval request!
+    if (curUser && !isShopAdmin(curUser)) {
+      return api.createDuePaymentRequest({
+        customerId,
+        amount: payAmount,
+        method,
+        note
+      });
+    }
+
     const payId = `pay_${Date.now()}`;
-    const paymentRecord = {
-      id: payId,
-      customerId,
-      amount: payAmount,
-      method,
-      note: note || "",
-      date: date || new Date().toISOString()
-    };
+    const receiptNo = `PAY-${Date.now().toString().slice(-6)}`;
 
     const cache = getLocalCache();
-    const cust = cache.customers.find(c => 
+    let cust = cache.customers.find(c => 
       c.id === customerId || 
       (c.phone && c.phone === customerId) || 
       (c.name && c.name.toLowerCase() === customerId.toLowerCase())
     );
+
+    // Fallback to Firestore if customer is not yet in local cache (e.g. after switching to 2nd shop)
+    if (!cust && customerId) {
+      try {
+        const custSnap = await getDoc(doc(db, "businesses", currentBusinessId, "customers", customerId));
+        if (custSnap.exists()) {
+          cust = { id: custSnap.id, ...custSnap.data() } as Customer;
+          cache.customers.push(cust);
+        }
+      } catch {}
+    }
+
+    const resolvedCustomerId = cust?.id || customerId;
+
+    const paymentRecord = {
+      id: payId,
+      receiptNo,
+      customerId: resolvedCustomerId,
+      customerName: cust?.name || "ক্রেতা",
+      customerPhone: cust?.phone || "",
+      amount: payAmount,
+      method,
+      note: note || "",
+      userName: curUser?.name || "অ্যাডমিন",
+      date: date || new Date().toISOString()
+    };
 
     if (cust) {
       cust.dueAmount = (Number(cust.dueAmount) || 0) - payAmount;
@@ -1550,15 +2083,28 @@ export const api = {
           dueAmount: cust.dueAmount
         });
       } catch {}
-      syncEntityToGoogleSheets('customer', cust, 'upsert');
+      syncEntityToGoogleSheets('customer', cust, 'upsert', currentBusinessId);
+
+      // Ensure sales list is populated in cache so oldest unpaid sales are settled properly across all shops
+      if (!cache.sales || cache.sales.length === 0) {
+        try {
+          const salesSnap = await getDocs(collection(db, "businesses", currentBusinessId, "sales"));
+          const loadedSales: Sale[] = [];
+          salesSnap.forEach(d => loadedSales.push({ id: d.id, ...d.data() } as Sale));
+          cache.sales = loadedSales;
+        } catch {}
+      }
 
       // Settle customer sales from oldest to newest so Invoices and SalesList reflect payment!
       let remaining = payAmount;
-      const unpaidSales = cache.sales.filter(s => 
-        ((s.customerId && s.customerId === cust.id) ||
-         (cust.phone && s.customerPhone && s.customerPhone.trim() === cust.phone.trim()) ||
-         (cust.name && s.customerName && s.customerName.trim().toLowerCase() === cust.name.trim().toLowerCase())) &&
-        (Number(s.dueAmount) || 0) > 0
+      const unpaidSales = (cache.sales || []).filter(s => 
+        ((s.customerId && s.customerId === cust!.id) ||
+         (cust!.phone && s.customerPhone && s.customerPhone.trim() === cust!.phone.trim()) ||
+         (cust!.name && s.customerName && s.customerName.trim().toLowerCase() === cust!.name.trim().toLowerCase())) &&
+        (Number(s.dueAmount) || 0) > 0 &&
+        !s.isTemporary &&
+        s.approvalStatus !== 'pending' &&
+        s.approvalStatus !== 'rejected'
       ).sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
 
       for (const s of unpaidSales) {
@@ -1575,31 +2121,161 @@ export const api = {
             dueAmount: s.dueAmount
           });
         } catch {}
-        syncEntityToGoogleSheets('sale', s, 'upsert');
+        syncEntityToGoogleSheets('sale', s, 'upsert', currentBusinessId);
       }
     }
 
     try {
-      await setDoc(doc(db, "businesses", currentBusinessId, "customers", customerId, "payments", payId), paymentRecord);
+      await setDoc(doc(db, "businesses", currentBusinessId, "customers", resolvedCustomerId, "payments", payId), paymentRecord);
     } catch {}
 
     cache.customerPayments.push(paymentRecord);
     saveLocalCache(cache);
-    syncEntityToGoogleSheets('payment', { customerId, amount: payAmount, method, note }, 'upsert');
+    syncEntityToGoogleSheets('payment', { customerId: resolvedCustomerId, amount: payAmount, method, note, newDue: cust?.dueAmount }, 'upsert', currentBusinessId);
+
+    try {
+      window.dispatchEvent(new CustomEvent('customer-payments-updated'));
+      window.dispatchEvent(new CustomEvent('sales-updated'));
+    } catch {}
 
     return { success: true, payment: paymentRecord };
   },
 
   getCustomerPayments: async (customerId: string): Promise<any[]> => {
+    const cache = getLocalCache();
+    const cust = (cache.customers || []).find(c =>
+      c.id === customerId ||
+      (c.phone && c.phone === customerId) ||
+      (c.name && c.name.toLowerCase() === String(customerId).toLowerCase())
+    );
+    const resolvedId = cust?.id || customerId;
+
+    const payMap = new Map<string, any>();
+    (cache.customerPayments || []).forEach(p => {
+      if (!p) return;
+      const matchesId = p.customerId === resolvedId || p.customerId === customerId;
+      const matchesPhone = cust?.phone && p.customerPhone && p.customerPhone.trim() === cust.phone.trim();
+      const matchesName = cust?.name && p.customerName && p.customerName.trim().toLowerCase() === cust.name.trim().toLowerCase();
+      if (matchesId || matchesPhone || matchesName) {
+        payMap.set(p.id, p);
+      }
+    });
+
     try {
-      const snap = await getDocs(collection(db, "businesses", currentBusinessId, "customers", customerId, "payments"));
-      const list: any[] = [];
-      snap.forEach(d => list.push({ id: d.id, ...d.data() }));
-      return list;
+      const snap = await getDocs(collection(db, "businesses", currentBusinessId, "customers", resolvedId, "payments"));
+      snap.forEach(d => {
+        const data = d.data();
+        payMap.set(d.id, {
+          id: d.id,
+          customerId: resolvedId,
+          customerName: cust?.name || data.customerName || "ক্রেতা",
+          customerPhone: cust?.phone || data.customerPhone || "",
+          ...data
+        });
+      });
     } catch (e) {
       console.warn("Firestore getCustomerPayments failed:", e);
-      return (getLocalCache().customerPayments || []).filter(p => p.customerId === customerId);
     }
+
+    const list = Array.from(payMap.values()).map(p => ({
+      ...p,
+      receiptNo: p.receiptNo || `PAY-${String(p.id || "").slice(-6).toUpperCase()}`,
+      customerName: p.customerName || cust?.name || "ক্রেতা",
+      customerPhone: p.customerPhone || cust?.phone || "",
+      date: p.date || p.createdAt || new Date().toISOString()
+    }));
+
+    list.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+    return list;
+  },
+
+  getAllCustomerPayments: async (): Promise<any[]> => {
+    const cache = getLocalCache();
+    const customers = await api.getCustomers();
+    const custMap = new Map<string, Customer>();
+    customers.forEach(c => custMap.set(c.id, c));
+
+    const payMap = new Map<string, any>();
+    (cache.customerPayments || []).forEach(p => {
+      if (p && p.id) payMap.set(p.id, p);
+    });
+
+    try {
+      await Promise.all(
+        customers.map(async (c) => {
+          try {
+            const snap = await getDocs(collection(db, "businesses", currentBusinessId, "customers", c.id, "payments"));
+            snap.forEach(d => {
+              const data = d.data();
+              payMap.set(d.id, {
+                id: d.id,
+                customerId: c.id,
+                customerName: c.name,
+                customerPhone: c.phone,
+                ...data
+              });
+            });
+          } catch {}
+        })
+      );
+    } catch {}
+
+    const all = Array.from(payMap.values()).map(p => {
+      const c = custMap.get(p.customerId);
+      return {
+        ...p,
+        receiptNo: p.receiptNo || `PAY-${String(p.id || "").slice(-6).toUpperCase()}`,
+        customerName: p.customerName || c?.name || "ক্রেতা",
+        customerPhone: p.customerPhone || c?.phone || ""
+      };
+    });
+
+    all.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+    saveLocalCache({ customerPayments: all });
+    return all;
+  },
+
+  deleteCustomerPayment: async (paymentId: string, customerId: string): Promise<boolean> => {
+    const cache = getLocalCache();
+    let payment = (cache.customerPayments || []).find(p => p.id === paymentId);
+    if (!payment && customerId) {
+      try {
+        const snap = await getDoc(doc(db, "businesses", currentBusinessId, "customers", customerId, "payments", paymentId));
+        if (snap.exists()) {
+          payment = { id: snap.id, ...snap.data() };
+        }
+      } catch {}
+    }
+
+    const payAmount = Number(payment?.amount) || 0;
+    const targetCustId = payment?.customerId || customerId;
+
+    // 1. Delete payment doc from Firestore
+    if (targetCustId) {
+      try {
+        await deleteDoc(doc(db, "businesses", currentBusinessId, "customers", targetCustId, "payments", paymentId));
+      } catch (e) {
+        console.warn("Firestore deleteCustomerPayment failed:", e);
+      }
+    }
+
+    // 2. Remove from local cache
+    cache.customerPayments = (cache.customerPayments || []).filter(p => p.id !== paymentId);
+
+    // 3. Reverse payment on customer dueAmount (add back the paid amount)
+    const cust = cache.customers.find(c => c.id === targetCustId);
+    if (cust && payAmount > 0) {
+      cust.dueAmount = (Number(cust.dueAmount) || 0) + payAmount;
+      try {
+        await updateDoc(doc(db, "businesses", currentBusinessId, "customers", cust.id), {
+          dueAmount: cust.dueAmount
+        });
+      } catch {}
+      syncEntityToGoogleSheets("customer", cust, "upsert", currentBusinessId);
+    }
+
+    saveLocalCache(cache);
+    return true;
   },
 
   // --- Suppliers ---
@@ -1730,9 +2406,15 @@ export const api = {
 
   recordSupplierPayment: async (supplierId: string, amount: number, description?: string): Promise<SupplierTransaction> => {
     const txId = `tx_${Date.now()}`;
-    const tx: SupplierTransaction = {
+    const voucherNo = `SUP-PAY-${Date.now().toString().slice(-6)}`;
+    const cache = getLocalCache();
+    const sup = cache.suppliers.find(s => s.id === supplierId);
+    const tx: SupplierTransaction & { voucherNo?: string; supplierName?: string; supplierPhone?: string } = {
       id: txId,
+      voucherNo,
       supplierId,
+      supplierName: sup?.name || "সরবরাহকারী",
+      supplierPhone: sup?.phone || "",
       type: "payment",
       amount: Number(amount) || 0,
       description: description || "পরিশোধ",
@@ -1751,9 +2433,10 @@ export const api = {
       console.warn("Firestore recordSupplierPayment failed:", e);
     }
 
-    const cache = getLocalCache();
-    const sup = cache.suppliers.find(s => s.id === supplierId);
-    if (sup) sup.dueAmount = Math.max(0, (sup.dueAmount || 0) - amount);
+    if (sup) {
+      sup.dueAmount = Math.max(0, (sup.dueAmount || 0) - amount);
+      syncEntityToGoogleSheets('supplier', sup, 'upsert', currentBusinessId);
+    }
     cache.supplierTransactions.push(tx);
     saveLocalCache(cache);
     return tx;
@@ -1761,9 +2444,15 @@ export const api = {
 
   recordSupplierPurchase: async (supplierId: string, amount: number, description?: string): Promise<SupplierTransaction> => {
     const txId = `tx_${Date.now()}`;
-    const tx: SupplierTransaction = {
+    const voucherNo = `SUP-PUR-${Date.now().toString().slice(-6)}`;
+    const cache = getLocalCache();
+    const sup = cache.suppliers.find(s => s.id === supplierId);
+    const tx: SupplierTransaction & { voucherNo?: string; supplierName?: string; supplierPhone?: string } = {
       id: txId,
+      voucherNo,
       supplierId,
+      supplierName: sup?.name || "সরবরাহকারী",
+      supplierPhone: sup?.phone || "",
       type: "purchase",
       amount: Number(amount) || 0,
       description: description || "পণ্য ক্রয়",
@@ -1782,38 +2471,145 @@ export const api = {
       console.warn("Firestore recordSupplierPurchase failed:", e);
     }
 
-    const cache = getLocalCache();
-    const sup = cache.suppliers.find(s => s.id === supplierId);
-    if (sup) sup.dueAmount = (sup.dueAmount || 0) + amount;
+    if (sup) {
+      sup.dueAmount = (sup.dueAmount || 0) + amount;
+      syncEntityToGoogleSheets('supplier', sup, 'upsert', currentBusinessId);
+    }
     cache.supplierTransactions.push(tx);
     saveLocalCache(cache);
     return tx;
   },
 
+  getAllSupplierTransactions: async (): Promise<any[]> => {
+    const cache = getLocalCache();
+    const suppliers = await api.getSuppliers();
+    const supMap = new Map<string, Supplier>();
+    suppliers.forEach(s => supMap.set(s.id, s));
+
+    const txMap = new Map<string, any>();
+    (cache.supplierTransactions || []).forEach(t => {
+      if (t && t.id) txMap.set(t.id, t);
+    });
+
+    try {
+      await Promise.all(
+        suppliers.map(async (s) => {
+          try {
+            const snap = await getDocs(collection(db, "businesses", currentBusinessId, "suppliers", s.id, "transactions"));
+            snap.forEach(d => {
+              const data = d.data();
+              txMap.set(d.id, {
+                id: d.id,
+                supplierId: s.id,
+                supplierName: s.name,
+                supplierPhone: s.phone,
+                ...data
+              });
+            });
+          } catch {}
+        })
+      );
+    } catch {}
+
+    const all = Array.from(txMap.values()).map(t => {
+      const s = supMap.get(t.supplierId);
+      const prefix = t.type === "payment" ? "SUP-PAY-" : "SUP-PUR-";
+      return {
+        ...t,
+        voucherNo: t.voucherNo || `${prefix}${String(t.id || "").slice(-6).toUpperCase()}`,
+        supplierName: t.supplierName || s?.name || "সরবরাহকারী",
+        supplierPhone: t.supplierPhone || s?.phone || ""
+      };
+    });
+
+    all.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+    saveLocalCache({ supplierTransactions: all });
+    return all;
+  },
+
+  deleteSupplierTransaction: async (txId: string, supplierId: string): Promise<boolean> => {
+    const cache = getLocalCache();
+    let tx = (cache.supplierTransactions || []).find(t => t.id === txId);
+    if (!tx && supplierId) {
+      try {
+        const snap = await getDoc(doc(db, "businesses", currentBusinessId, "suppliers", supplierId, "transactions", txId));
+        if (snap.exists()) {
+          tx = { id: snap.id, ...snap.data() } as SupplierTransaction;
+        }
+      } catch {}
+    }
+
+    const txAmount = Number(tx?.amount) || 0;
+    const targetSupId = tx?.supplierId || supplierId;
+
+    if (targetSupId) {
+      try {
+        await deleteDoc(doc(db, "businesses", currentBusinessId, "suppliers", targetSupId, "transactions", txId));
+      } catch (e) {
+        console.warn("Firestore deleteSupplierTransaction failed:", e);
+      }
+    }
+
+    cache.supplierTransactions = (cache.supplierTransactions || []).filter(t => t.id !== txId);
+
+    const sup = cache.suppliers.find(s => s.id === targetSupId);
+    if (sup && txAmount > 0) {
+      if (tx?.type === "payment") {
+        // Reversing a supplier payment adds the amount back to what we owe the supplier
+        sup.dueAmount = (Number(sup.dueAmount) || 0) + txAmount;
+      } else {
+        // Reversing a supplier purchase subtracts the amount from what we owe the supplier
+        sup.dueAmount = Math.max(0, (Number(sup.dueAmount) || 0) - txAmount);
+      }
+      try {
+        await updateDoc(doc(db, "businesses", currentBusinessId, "suppliers", sup.id), {
+          dueAmount: sup.dueAmount
+        });
+      } catch {}
+      syncEntityToGoogleSheets("supplier", sup, "upsert", currentBusinessId);
+    }
+
+    saveLocalCache(cache);
+    return true;
+  },
+
   // --- Expenses ---
   getExpenses: async (userId?: string): Promise<Expense[]> => {
+    const curUser = getCurrentUser();
+    let expenses: Expense[] = [];
     try {
       const snap = await getDocs(collection(db, "businesses", currentBusinessId, "expenses"));
-      const expenses: Expense[] = [];
       snap.forEach(d => expenses.push({ id: d.id, ...d.data() } as Expense));
       expenses.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
       saveLocalCache({ expenses });
-      return expenses;
     } catch (e) {
       console.warn("Firestore getExpenses failed:", e);
-      return (getLocalCache().expenses || []) as Expense[];
+      expenses = (getLocalCache().expenses || []) as Expense[];
     }
+
+    if (curUser && curUser.role === "salesman") {
+      return expenses.filter(e => e.userId === curUser.id);
+    }
+    if (userId) {
+      return expenses.filter(e => e.userId === userId);
+    }
+    return expenses;
   },
 
   subscribeExpenses: (callback: (expenses: Expense[]) => void): (() => void) => {
     try {
       const colRef = collection(db, "businesses", currentBusinessId, "expenses");
       return onSnapshot(colRef, (snap) => {
+        const curUser = getCurrentUser();
         const expenses: Expense[] = [];
         snap.forEach(d => expenses.push({ id: d.id, ...d.data() } as Expense));
         expenses.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
         saveLocalCache({ expenses });
-        callback(expenses);
+        if (curUser && curUser.role === "salesman") {
+          callback(expenses.filter(e => e.userId === curUser.id));
+        } else {
+          callback(expenses);
+        }
       }, (error) => {
         console.warn("onSnapshot expenses error:", error);
       });
@@ -1879,23 +2675,52 @@ export const api = {
   // --- Business Info & Multi-Shop Management ---
   getBusiness: async (shopId?: string): Promise<Business> => {
     const targetBizId = shopId || currentBusinessId || "main-business";
+    const cachedBiz = getLocalCache(targetBizId).business;
+    const savedLocalPrinter =
+      typeof window !== "undefined"
+        ? (localStorage.getItem(`smart_printer_${targetBizId}`) as 'thermal' | 'a4' | null)
+        : null;
+
     try {
       const snap = await getDoc(doc(db, "businesses", targetBizId));
       if (snap.exists()) {
         const data = snap.data();
-        const biz = { id: snap.id, ...data } as Business;
+        const resolvedPrinter: 'thermal' | 'a4' =
+          savedLocalPrinter ||
+          (data.defaultPrinter === 'a4' || data.defaultPrinter === 'thermal' ? data.defaultPrinter : undefined) ||
+          cachedBiz?.defaultPrinter ||
+          'thermal';
+        const biz = {
+          ...(cachedBiz || {}),
+          ...data,
+          id: snap.id,
+          name: data.name || cachedBiz?.name || (targetBizId === "main-business" ? "হিসাব পাতি" : "নতুন শপ"),
+          defaultPrinter: resolvedPrinter
+        } as Business;
         saveLocalCache({ business: biz }, targetBizId);
+        if (typeof window !== "undefined") {
+          localStorage.setItem(`smart_printer_${targetBizId}`, resolvedPrinter);
+        }
         return biz;
       } else if (targetBizId === "main-business") {
         // Seed main-business if not yet in Firestore
-        const defaultBiz = getLocalCache("main-business").business || defaultDbData.business;
+        const defaultBiz: Business = {
+          ...(cachedBiz || defaultDbData.business),
+          defaultPrinter: savedLocalPrinter || cachedBiz?.defaultPrinter || 'thermal'
+        };
         await setDoc(doc(db, "businesses", "main-business"), cleanForFirestore(defaultBiz), { merge: true });
         return defaultBiz;
       }
     } catch (e) {
       console.warn("Firestore getBusiness failed:", e);
     }
-    return (getLocalCache(targetBizId).business || { ...defaultDbData.business, id: targetBizId }) as Business;
+    const fallbackBiz: Business = {
+      ...defaultDbData.business,
+      ...(cachedBiz || {}),
+      id: targetBizId,
+      defaultPrinter: savedLocalPrinter || cachedBiz?.defaultPrinter || 'thermal'
+    };
+    return fallbackBiz;
   },
 
   updateBusiness: async (business: Partial<Business>, shopId?: string): Promise<Business> => {
@@ -1904,15 +2729,36 @@ export const api = {
     const previousName = (cache.business?.name || "").trim();
     const nextName = (business.name || previousName).trim();
 
-    const payload = cleanForFirestore({ ...business, id: targetBizId });
+    if (business.defaultPrinter && typeof window !== "undefined") {
+      localStorage.setItem(`smart_printer_${targetBizId}`, business.defaultPrinter);
+    }
+
+    const resolvedPrinter: 'thermal' | 'a4' =
+      business.defaultPrinter ||
+      (typeof window !== "undefined" ? (localStorage.getItem(`smart_printer_${targetBizId}`) as 'thermal' | 'a4' | null) : null) ||
+      cache.business?.defaultPrinter ||
+      'thermal';
+
+    const mergedBiz: Business = {
+      ...cache.business,
+      ...business,
+      id: targetBizId,
+      defaultPrinter: resolvedPrinter
+    };
+
+    const payload = cleanForFirestore(mergedBiz);
     try {
       await setDoc(doc(db, "businesses", targetBizId), payload, { merge: true });
     } catch (e) {
       console.warn("Firestore updateBusiness failed:", e);
     }
 
-    cache.business = { ...cache.business, ...business, id: targetBizId };
+    cache.business = mergedBiz;
     saveLocalCache(cache, targetBizId);
+
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("business-updated", { detail: mergedBiz }));
+    }
 
     // Automatically rename the shop's linked Google Sheet when the shop name is updated, keeping the connection intact
     if (nextName) {
@@ -1927,6 +2773,12 @@ export const api = {
   },
 
   getBusinesses: async (): Promise<Business[]> => {
+    const curUser = getCurrentUser();
+    if (!isGlobalSuperAdmin(curUser)) {
+      const ownShop = await api.getBusiness(currentBusinessId);
+      return [ownShop];
+    }
+
     const shopsMap = new Map<string, Business>();
     try {
       const snap = await getDocs(collection(db, "businesses"));
@@ -1962,6 +2814,11 @@ export const api = {
   },
 
   createBusiness: async (shopData: Partial<Business> & { webAppUrl?: string; sheetUrl?: string }): Promise<Business> => {
+    const curUser = getCurrentUser();
+    if (!isGlobalSuperAdmin(curUser)) {
+      throw new Error("শুধুমাত্র সুপার অ্যাডমিন নতুন শপ তৈরি করতে পারবেন।");
+    }
+
     const cleanName = (shopData.name || "").trim();
     if (!cleanName) {
       throw new Error("শপের নাম প্রদান করা আবশ্যক।");
@@ -1993,38 +2850,61 @@ export const api = {
       expenses: [],
       smsLogs: [],
       approvalRequests: [],
+      users: [],
       business: newShop
     }, newShopId);
 
-    // Automatically create and attach a dedicated Google Sheet for this new shop
+    // Automatically create and attach a dedicated Google Sheet for this new shop as its live database
     try {
-      const autoSheetConfig = await autoCreateShopGoogleSheet(newShop, shopData.webAppUrl);
+      const initialShopPayload = {
+        business: newShop,
+        products: [],
+        categories: [],
+        customers: [],
+        suppliers: [],
+        expenses: [],
+        sales: [],
+        approvalRequests: [],
+        smsLogs: [],
+        users: []
+      };
+      const autoSheetConfig = await autoCreateShopGoogleSheet(newShop, shopData.webAppUrl, initialShopPayload);
       if (shopData.sheetUrl && shopData.sheetUrl.trim() && !autoSheetConfig.sheetUrl) {
-        await saveSheetsConfig({
+        const updatedCfg = await saveSheetsConfig({
           sheetUrl: shopData.sheetUrl.trim()
         }, newShopId);
+        newShop.googleSheetsConfig = updatedCfg;
+      } else {
+        newShop.googleSheetsConfig = autoSheetConfig;
       }
+      saveLocalCache({ business: newShop }, newShopId);
     } catch (sheetErr) {
       console.warn("Auto Google Sheet provisioning warning:", sheetErr);
-      await saveSheetsConfig({
+      const fallbackCfg = await saveSheetsConfig({
         webAppUrl: (shopData.webAppUrl || "").trim(),
         sheetUrl: (shopData.sheetUrl || "").trim(),
         autoSync: true
       }, newShopId);
+      newShop.googleSheetsConfig = fallbackCfg;
+      saveLocalCache({ business: newShop }, newShopId);
     }
 
     return newShop;
   },
 
   switchBusiness: async (shopId: string): Promise<Business> => {
+    const curUser = getCurrentUser();
+    if (!isGlobalSuperAdmin(curUser)) {
+      throw new Error("শুধুমাত্র সুপার অ্যাডমিন অন্য শপে প্রবেশ করতে পারবেন।");
+    }
+
     const targetShopId = (shopId || "main-business").trim();
     setApiBusinessId(targetShopId);
 
     if (typeof window !== "undefined") {
       localStorage.setItem(ACTIVE_SHOP_KEY, targetShopId);
-      const curUser = getCurrentUser();
       if (curUser) {
-        const updatedUser: User = { ...curUser, businessId: targetShopId };
+        const updatedUser: User = { ...stripSensitiveUserFields(curUser), businessId: targetShopId };
         sessionStorage.setItem(USER_SESSION_KEY, JSON.stringify(updatedUser));
         localStorage.setItem(USER_SESSION_KEY, JSON.stringify(updatedUser));
       }
@@ -2040,8 +2920,8 @@ export const api = {
 
   verifyAdminCredentials: async (email: string, pass: string): Promise<boolean> => {
     const curUser = getCurrentUser();
-    if (!isSuperAdminUser(curUser)) {
-      throw new Error("শুধুমাত্র অ্যাডমিন শপ ডিলিট করার অনুমতি রাখেন।");
+    if (!isGlobalSuperAdmin(curUser)) {
+      throw new Error("শুধুমাত্র সুপার অ্যাডমিন শপ ডিলিট করার অনুমতি রাখেন।");
     }
 
     const cleanEmail = (email || "").trim().toLowerCase();
@@ -2051,7 +2931,7 @@ export const api = {
       throw new Error("শপ ডিলিট নিশ্চিত করতে অ্যাডমিনের ইমেইল এবং পাসওয়ার্ড দিন।");
     }
 
-    // 1. Verify against Firestore users collection
+    // 1. Verify against Firestore users collection (using PBKDF2 hash verification)
     try {
       const usersCol = collection(db, "users");
       const q = query(usersCol, where("email", "==", cleanEmail));
@@ -2059,8 +2939,9 @@ export const api = {
       if (!snap.empty) {
         for (const uDoc of snap.docs) {
           const uData = uDoc.data() as any;
-          if (isSuperAdminUser({ id: uDoc.id, email: uData.email, role: uData.role })) {
-            if (uData.password && uData.password === cleanPass) {
+          if (isGlobalSuperAdmin({ id: uDoc.id, ...uData })) {
+            const valid = await verifyUserCredential(uData, cleanPass);
+            if (valid) {
               return true;
             }
           }
@@ -2070,19 +2951,12 @@ export const api = {
       console.warn("Admin verification Firestore lookup warning:", err);
     }
 
-    // 2. Verify against Super Admin credentials or local cache admin record
-    if (
-      (cleanEmail === "mominkhan051220@gmail.com" || cleanEmail === "md.momin.khan7579@gmail.com") &&
-      (cleanPass === "Momin1234@" || cleanPass === "123456")
-    ) {
-      return true;
-    }
-
+    // 2. Offline fallback against cached Global Super Admin record
     const cache = getLocalCache("main-business");
     const cachedAdmin = (cache.users || []).find(
-      u => u.email?.toLowerCase() === cleanEmail && isSuperAdminUser(u)
+      u => u.email?.toLowerCase() === cleanEmail && isGlobalSuperAdmin(u)
     );
-    if (cachedAdmin && cachedAdmin.password === cleanPass) {
+    if (cachedAdmin && (await verifyUserCredential(cachedAdmin, cleanPass))) {
       return true;
     }
 
@@ -2097,7 +2971,7 @@ export const api = {
       throw new Error("মেইন শপ (ডিফল্ট শপ) মুছে ফেলা যাবে না।");
     }
 
-    // Verify Admin Role & Admin Email/Password
+    // Verify Global Super Admin Role & Admin Email/Password
     await api.verifyAdminCredentials(adminAuth?.email || "", adminAuth?.password || "");
 
     const wasActiveShop = shopId === currentBusinessId;
@@ -2118,12 +2992,12 @@ export const api = {
       } catch {}
     }
 
-    // 3. Delete non-admin users belonging exclusively to this shop
+    // 3. Delete users belonging exclusively to this shop
     try {
       const userSnap = await getDocs(collection(db, "users"));
       for (const uDoc of userSnap.docs) {
         const uData = uDoc.data();
-        if (!isSuperAdminUser({ id: uDoc.id, ...uData } as any) && uData.businessId === shopId) {
+        if (!isGlobalSuperAdmin({ id: uDoc.id, ...uData } as any) && uData.businessId === shopId) {
           await deleteDoc(uDoc.ref);
         }
       }
@@ -2263,6 +3137,7 @@ export const api = {
     const cache = getLocalCache();
     cache.smsLogs.unshift(log);
     saveLocalCache(cache);
+    syncEntityToGoogleSheets('sms', log, 'upsert', currentBusinessId);
     return { success: true, log };
   },
 
@@ -2292,7 +3167,7 @@ export const api = {
   },
 
   getAllData: async (): Promise<any> => {
-    const [users, products, categories, customers, suppliers, sales, expenses, business, approvalRequests] = await Promise.all([
+    const [users, products, categories, customers, suppliers, sales, expenses, business, approvalRequests, smsLogs, smsConfig] = await Promise.all([
       api.getUsers(),
       api.getProducts(),
       api.getCategories(),
@@ -2301,11 +3176,13 @@ export const api = {
       api.getSales(),
       api.getExpenses(),
       api.getBusiness(),
-      api.getApprovalRequests()
+      api.getApprovalRequests(),
+      api.getSMSLogs(),
+      api.getSMSConfig()
     ]);
 
     return {
-      version: "2.5-CLOUD",
+      version: "3.0-CLOUD",
       timestamp: new Date().toISOString(),
       business,
       users,
@@ -2315,7 +3192,9 @@ export const api = {
       suppliers,
       sales,
       expenses,
-      approvalRequests
+      approvalRequests,
+      smsLogs,
+      smsConfig
     };
   },
 
@@ -2324,7 +3203,27 @@ export const api = {
       throw new Error("ভুল ডেটা ফরম্যাট।");
     }
 
-    // Restore to Firestore
+    // Normalize restored users strictly into the active shop and avoid reintroducing plaintext passwords
+    const normalizedUsers: any[] = [];
+    if (Array.isArray(data.users)) {
+      for (const rawUser of data.users) {
+        if (!rawUser || !rawUser.id) continue;
+        const globalSuper = isGlobalSuperAdmin(rawUser);
+        const uCopy: any = {
+          ...rawUser,
+          businessId: globalSuper ? (rawUser.businessId || "main-business") : currentBusinessId
+        };
+        if (typeof uCopy.password === "string" && uCopy.password.trim().length > 0 && !uCopy.passwordHash) {
+          const { hash, salt } = await hashPassword(uCopy.password.trim());
+          uCopy.passwordHash = hash;
+          uCopy.passwordSalt = salt;
+        }
+        delete uCopy.password;
+        normalizedUsers.push(uCopy);
+      }
+    }
+
+    // Restore to Firestore strictly scoped to currentBusinessId
     try {
       if (Array.isArray(data.products)) {
         for (const p of data.products) {
@@ -2361,13 +3260,25 @@ export const api = {
           if (req.id) await setDoc(doc(db, "businesses", currentBusinessId, "approval_requests", req.id), cleanForFirestore(req));
         }
       }
-      if (Array.isArray(data.users)) {
-        for (const u of data.users) {
-          if (u.id) await setDoc(doc(db, "users", u.id), cleanForFirestore(u), { merge: true });
+      if (Array.isArray(data.smsLogs)) {
+        for (const log of data.smsLogs) {
+          if (log.id) await setDoc(doc(db, "businesses", currentBusinessId, "sms_logs", log.id), cleanForFirestore(log));
         }
       }
+      for (const u of normalizedUsers) {
+        await setDoc(doc(db, "users", u.id), cleanForFirestore(u), { merge: true });
+      }
       if (data.business) {
-        await setDoc(doc(db, "businesses", currentBusinessId), cleanForFirestore(data.business), { merge: true });
+        const savedPrinter =
+          typeof window !== "undefined"
+            ? (localStorage.getItem(`smart_printer_${currentBusinessId}`) as 'thermal' | 'a4' | null)
+            : null;
+        const scopedBusiness = {
+          ...data.business,
+          id: currentBusinessId,
+          defaultPrinter: savedPrinter || data.business.defaultPrinter || "thermal"
+        };
+        await setDoc(doc(db, "businesses", currentBusinessId), cleanForFirestore(scopedBusiness), { merge: true });
       }
     } catch (fsErr) {
       console.warn("Firestore restore encountered warning:", fsErr);
@@ -2381,17 +3292,33 @@ export const api = {
     if (data.sales) cache.sales = data.sales;
     if (data.expenses) cache.expenses = data.expenses;
     if (data.approvalRequests) cache.approvalRequests = data.approvalRequests;
-    if (data.users && data.users.length > 0) cache.users = data.users;
-    if (data.business) cache.business = { ...cache.business, ...data.business };
+    if (data.smsLogs) cache.smsLogs = data.smsLogs;
+    if (normalizedUsers.length > 0) cache.users = normalizedUsers;
+    if (data.business) {
+      const savedPrinter =
+        typeof window !== "undefined"
+          ? (localStorage.getItem(`smart_printer_${currentBusinessId}`) as 'thermal' | 'a4' | null)
+          : null;
+      cache.business = {
+        ...cache.business,
+        ...data.business,
+        id: currentBusinessId,
+        defaultPrinter: savedPrinter || data.business.defaultPrinter || cache.business?.defaultPrinter || "thermal"
+      };
+    }
     saveLocalCache(cache);
 
     return { success: true };
   },
 
   clearAllData: async (): Promise<any> => {
-    // 1. Delete Firestore collections
+    const curUser = getCurrentUser();
+    if (!isShopAdmin(curUser)) {
+      throw new Error("শুধুমাত্র অ্যাডমিন শপের ডাটা মুছে ফেলতে পারবেন।");
+    }
+
     const collectionsToClear = ["products", "customers", "sales", "expenses", "suppliers", "categories", "sms_logs", "approval_requests"];
-    
+
     for (const colName of collectionsToClear) {
       try {
         const snap = await getDocs(collection(db, "businesses", currentBusinessId, colName));
@@ -2402,7 +3329,7 @@ export const api = {
       }
     }
 
-    // 2. Delete non-admin users belonging ONLY to the current shop from Firestore
+    // Delete non-admin users belonging ONLY to the current shop from Firestore
     try {
       const userSnap = await getDocs(collection(db, "users"));
       for (const uDoc of userSnap.docs) {
@@ -2410,7 +3337,7 @@ export const api = {
         const userBizId = uData.businessId || "main-business";
         if (
           userBizId === currentBusinessId &&
-          !isSuperAdminUser({ id: uDoc.id, ...uData } as any)
+          !isShopAdmin({ id: uDoc.id, ...uData } as any)
         ) {
           await deleteDoc(uDoc.ref);
         }
@@ -2419,12 +3346,8 @@ export const api = {
       console.warn("Error deleting non-admin users from Firestore:", uErr);
     }
 
-    // 3. Clear Local Cache for the current shop (keep only Admin user)
     const cache = getLocalCache();
-    cache.users = (cache.users || []).filter(u => isSuperAdminUser(u));
-    if (cache.users.length === 0) {
-      cache.users = defaultDbData.users;
-    }
+    cache.users = (cache.users || []).filter(u => isShopAdmin(u));
     cache.products = [];
     cache.categories = [];
     cache.customers = [];
@@ -2440,10 +3363,124 @@ export const api = {
     return { success: true };
   },
 
-  // --- Google Sheets Master Database Integration (Per Shop) ---
+  // --- Google Sheets Master Database Integration (Per Shop & All Shops) ---
   syncAllToGoogleSheets: async (customUrl?: string) => {
     const allData = await api.getAllData();
     return syncAllToGoogleSheets(allData, customUrl, currentBusinessId);
+  },
+
+  getShopAllData: async (shopId: string): Promise<any> => {
+    const targetShopId = shopId || "main-business";
+    if (targetShopId === currentBusinessId) {
+      return api.getAllData();
+    }
+    try {
+      const [
+        bizSnap,
+        prodSnap,
+        catSnap,
+        custSnap,
+        supSnap,
+        salesSnap,
+        expSnap,
+        appSnap,
+        smsSnap,
+        usersSnap
+      ] = await Promise.all([
+        getDoc(doc(db, "businesses", targetShopId)),
+        getDocs(collection(db, "businesses", targetShopId, "products")),
+        getDocs(collection(db, "businesses", targetShopId, "categories")),
+        getDocs(collection(db, "businesses", targetShopId, "customers")),
+        getDocs(collection(db, "businesses", targetShopId, "suppliers")),
+        getDocs(collection(db, "businesses", targetShopId, "sales")),
+        getDocs(collection(db, "businesses", targetShopId, "expenses")),
+        getDocs(collection(db, "businesses", targetShopId, "approval_requests")),
+        getDocs(collection(db, "businesses", targetShopId, "sms_logs")),
+        getDocs(collection(db, "users"))
+      ]);
+
+      const business = bizSnap.exists()
+        ? ({ id: bizSnap.id, ...bizSnap.data() } as Business)
+        : ({ id: targetShopId, name: targetShopId } as Business);
+      const products = prodSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const categories = catSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const customers = custSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const suppliers = supSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const sales = salesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const expenses = expSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const approvalRequests = appSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const smsLogs = smsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const users = usersSnap.docs
+        .map(d => ({ id: d.id, ...d.data() } as any))
+        .filter(u => (u.businessId || "main-business") === targetShopId)
+        .map(stripSensitiveUserFields);
+
+      return {
+        version: "3.0-CLOUD",
+        timestamp: new Date().toISOString(),
+        business,
+        users,
+        products,
+        categories,
+        customers,
+        suppliers,
+        sales,
+        expenses,
+        approvalRequests,
+        smsLogs
+      };
+    } catch (e) {
+      return {
+        version: "3.0-CLOUD",
+        timestamp: new Date().toISOString(),
+        business: { id: targetShopId, name: targetShopId },
+        users: [],
+        products: [],
+        categories: [],
+        customers: [],
+        suppliers: [],
+        sales: [],
+        expenses: [],
+        approvalRequests: [],
+        smsLogs: []
+      };
+    }
+  },
+
+  syncAllShopsToGoogleSheets: async (): Promise<{ syncedShops: number; totalShops: number; results: any[] }> => {
+    const curUser = getCurrentUser();
+    if (!isGlobalSuperAdmin(curUser)) {
+      throw new Error("শুধুমাত্র সুপার অ্যাডমিন সকল শপের গুগল শিট একসাথে আপডেট করতে পারবেন।");
+    }
+
+    const shops = await api.getBusinesses();
+    const results: any[] = [];
+    let syncedShops = 0;
+
+    for (const shop of shops) {
+      try {
+        const shopData = await api.getShopAllData(shop.id);
+        let cfg = await fetchCloudSheetsConfig(shop.id);
+        if (!cfg.spreadsheetId && !cfg.sheetUrl) {
+          const recognized = await ensureShopGoogleSheet(shop, cfg.webAppUrl || undefined, shopData, {
+            allowCreateIfMissing: false,
+            silentIfMissing: true
+          });
+          if (recognized) cfg = recognized;
+        }
+        const res = await syncAllToGoogleSheets(shopData, cfg.webAppUrl || undefined, shop.id);
+        if (res.success) syncedShops++;
+        results.push({ shopId: shop.id, shopName: shop.name, ...res });
+      } catch (err: any) {
+        results.push({ shopId: shop.id, shopName: shop.name, success: false, error: err?.message });
+      }
+    }
+
+    return {
+      syncedShops,
+      totalShops: shops.length,
+      results
+    };
   },
 
   restoreFromGoogleSheets: async (customUrl?: string) => {
@@ -2466,5 +3503,39 @@ export const api = {
   autoCreateShopGoogleSheet: async (shop?: Business, customWebAppUrl?: string) => {
     const targetShop = shop || (await api.getBusiness(currentBusinessId));
     return autoCreateShopGoogleSheet(targetShop, customWebAppUrl);
+  },
+
+  ensureShopGoogleSheet: async (
+    shopId?: string,
+    options?: { allowCreateIfMissing?: boolean; forceRestoreFromSheet?: boolean; silentIfMissing?: boolean }
+  ) => {
+    const curUser = getCurrentUser();
+    if (!isShopAdmin(curUser)) return null;
+    const targetId = shopId || curUser?.businessId || currentBusinessId || "main-business";
+    const [shop, allData] = await Promise.all([
+      api.getBusiness(targetId),
+      api.getShopAllData(targetId)
+    ]);
+    const result = await ensureShopGoogleSheet(shop, undefined, allData, options);
+    // Automatically restore data back into the active shop if the recognized Google Sheet had previous data!
+    if (result?.restoredFromSheetData && targetId === currentBusinessId) {
+      try {
+        await api.restoreDB(result.restoredFromSheetData);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("shop-sheet-restored", {
+              detail: {
+                shopId: targetId,
+                shopName: shop?.name || targetId,
+                sheetName: result.sheetName
+              }
+            })
+          );
+        }
+      } catch (restoreErr) {
+        console.warn("[EnsureShopSheet] Auto-restore from recognized sheet warning:", restoreErr);
+      }
+    }
+    return result;
   }
 };
