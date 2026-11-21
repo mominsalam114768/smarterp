@@ -10,5 +10,4 @@ coverage/
 .aistudio/
 public/assets/aistudio/
 DRAFT_firestore.rules
-bun.lock
 
