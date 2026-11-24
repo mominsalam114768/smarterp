@@ -119,16 +119,16 @@ service cloud.firestore {
     }
 
     function isValidUser(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
-             data.email is string && data.email.size() <= 120 &&
-             data.role in ['admin', 'manager', 'salesman', 'accountant', 'staff'] &&
-             data.businessId is string && data.businessId.size() > 0 && data.businessId.size() <= 128 &&
+      return (!('name' in data) || (data.name is string && data.name.size() > 0 && data.name.size() <= 100)) &&
+             (!('email' in data) || (data.email is string && data.email.size() <= 120)) &&
+             (!('role' in data) || data.role in ['admin', 'super_admin', 'manager', 'salesman', 'accountant', 'staff']) &&
+             (!('businessId' in data) || (data.businessId is string && data.businessId.size() <= 128)) &&
              (!('isSuperAdmin' in data) || data.isSuperAdmin is bool) &&
-             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
-             (!('password' in data) || (data.password is string && data.password.size() <= 128)) &&
-             (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 128)) &&
-             (!('passwordSalt' in data) || (data.passwordSalt is string && data.passwordSalt.size() <= 128)) &&
-             (!('image' in data) || (data.image is string && data.image.size() <= 200000)) &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 50)) &&
+             (!('password' in data) || data.password == null || (data.password is string && data.password.size() <= 128) || data.password is map) &&
+             (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 256)) &&
+             (!('passwordSalt' in data) || (data.passwordSalt is string && data.passwordSalt.size() <= 256)) &&
+             (!('image' in data) || (data.image is string && data.image.size() <= 500000)) &&
              (!('permissions' in data) || (data.permissions is list && data.permissions.size() <= 50)) &&
              (!('lastSeen' in data) || data.lastSeen is string) &&
              (!('lastActive' in data) || data.lastActive is string) &&
@@ -188,19 +188,17 @@ service cloud.firestore {
         isAdmin() ||
         (userId == 'admin-1' && !exists(/databases/$(database)/documents/users/admin-1)) ||
         (!isSignedIn() && !exists(/databases/$(database)/documents/users/$(userId)) && incoming().get('isSuperAdmin', false) == false) ||
-        (incoming().role != 'admin' && !exists(/databases/$(database)/documents/users/$(userId)) && incoming().get('isSuperAdmin', false) == false)
+        (incoming().get('role', 'salesman') != 'admin' && !exists(/databases/$(database)/documents/users/$(userId)) && incoming().get('isSuperAdmin', false) == false)
       );
 
       allow update: if isValidUser(incoming()) && (
         isAdmin() ||
+        isBusinessAdmin(existing().get('businessId', 'main-business')) ||
         (
-          isSignedIn() &&
-          request.auth.uid == userId &&
-          incoming().role == existing().role &&
-          incoming().businessId == existing().businessId &&
+          incoming().get('role', 'salesman') == existing().get('role', 'salesman') &&
+          incoming().get('businessId', 'main-business') == existing().get('businessId', 'main-business') &&
           incoming().get('isSuperAdmin', false) == existing().get('isSuperAdmin', false)
-        ) ||
-        (!isSignedIn() && isBusinessAdmin(existing().businessId))
+        )
       );
 
       allow delete: if isBusinessAdmin('main-business') && userId != 'admin-1';

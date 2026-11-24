@@ -25,7 +25,7 @@ import {
   setPersistence,
   browserSessionPersistence
 } from "firebase/auth";
-import { auth, db, doc, getDoc, setDoc, collection, query, where, getDocs, limit } from "./lib/firebase";
+import { auth, db, doc, getDoc, setDoc, collection, query, where, getDocs, limit, isAuthorizedDomain } from "./lib/firebase";
 
 import { Dashboard } from "./components/Dashboard";
 import { POS } from "./components/POS";
@@ -209,13 +209,19 @@ export default function App() {
       }
     };
 
+    const handleNeedsSetup = () => {
+      setNeedsInitialSetup(true);
+    };
+
     window.addEventListener('smart-print', handlePrint);
     window.addEventListener('business-updated', handleBusinessUpdated);
     window.addEventListener('app-update-available', handlePwaUpdate);
+    window.addEventListener('needs-initial-setup', handleNeedsSetup);
     return () => {
       window.removeEventListener('smart-print', handlePrint);
       window.removeEventListener('business-updated', handleBusinessUpdated);
       window.removeEventListener('app-update-available', handlePwaUpdate);
+      window.removeEventListener('needs-initial-setup', handleNeedsSetup);
     };
   }, []);
 
@@ -300,7 +306,6 @@ export default function App() {
       const userData = await api.login(email, password);
       handleLogin(userData);
     } catch (err: any) {
-      console.error("Login Fail:", err);
       setLoginError(err.message || "লগইন করা সম্ভব হয়নি।");
     } finally {
       setLoginLoading(false);
@@ -517,6 +522,22 @@ export default function App() {
     
     return false;
   };
+
+  if (!isAuthorizedDomain()) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
+        <div className="max-w-md w-full bg-slate-900 border border-rose-500/30 rounded-3xl p-8 shadow-2xl">
+          <div className="w-16 h-16 bg-rose-500/10 text-rose-500 rounded-2xl flex items-center justify-center mx-auto mb-5">
+            <Lock className="w-8 h-8" />
+          </div>
+          <h1 className="text-2xl font-black text-white mb-2">অননুমোদিত ডোমেইন অ্যাক্সেস</h1>
+          <p className="text-slate-400 text-sm leading-relaxed">
+            নিরাপত্তার স্বার্থে এই অ্যাপ্লিকেশনটি শুধুমাত্র অনুমোদিত ডোমেইনে চলার জন্য সুরক্ষিত করা হয়েছে। এই ডোমেইন থেকে অ্যাপ্লিকেশনটি ব্যবহারের অনুমতি নেই।
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (isInitializing) {
     return (

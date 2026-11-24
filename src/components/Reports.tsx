@@ -5,7 +5,7 @@
 
 import { BarChart3, PieChart as PieChartIcon, FileSpreadsheet, Download, Activity, Printer, TrendingUp, DollarSign, AlertCircle } from "lucide-react";
 import { useState, useEffect } from "react";
-import { api, isOtherProduct } from "../services/api";
+import { api, isOtherProduct, isShopAdmin } from "../services/api";
 import { DashboardStats, User } from "../types";
 import { printReport } from "../lib/printUtils";
 import { getDhakaDateString, formatDhakaDate } from "../lib/utils";
@@ -30,7 +30,7 @@ export function Reports({ user }: { user: User | null }) {
     setTimeout(() => setNotification(null), 3500);
   };
   
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isShopAdmin(user);
 
   // Date Range States - Default to last 30 days in Asia/Dhaka timezone
   const [startDate, setStartDate] = useState(() => {
@@ -130,11 +130,16 @@ export function Reports({ user }: { user: User | null }) {
   };
 
   useEffect(() => {
-    loadData();
     if (isAdmin) {
       api.getUsers().then(setUsers);
+      const unsubUsers = api.subscribeUsers(setUsers);
+      return () => unsubUsers();
     }
-  }, [user?.businessId]); // Reload if shop switches
+  }, [isAdmin, user?.businessId]);
+
+  useEffect(() => {
+    loadData();
+  }, [user?.businessId, user?.id, isAdmin, selectedUserId, startDate, endDate]);
 
   const handleApplyFilter = () => {
     loadData();

@@ -75,10 +75,10 @@ import {
 
 const defaultBusiness: Business = {
   id: "main-business",
-  name: "Smart Business",
+  name: "হিসাব পাতি",
   address: "ঢাকা, বাংলাদেশ",
-  phone: "01700000000",
-  currency: "BDT",
+  phone: "",
+  currency: "৳",
   backupEmail: "",
   smtpConfig: {
     user: "",
@@ -1068,8 +1068,8 @@ export function Settings({
       await api.changePassword({ currentPassword: passwords.current, newPassword: passwords.new });
       showNotify("পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে");
       setPasswords({ current: "", new: "", confirm: "" });
-    } catch (err) {
-      showNotify("পাসওয়ার্ড পরিবর্তন ব্যর্থ হয়েছে", "error");
+    } catch (err: any) {
+      showNotify(err?.message || "পাসওয়ার্ড পরিবর্তন ব্যর্থ হয়েছে", "error");
     } finally {
       setSaving(false);
     }

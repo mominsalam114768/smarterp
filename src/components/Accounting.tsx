@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, FormEvent } from "react";
-import { api } from "../services/api";
+import { api, isShopAdmin } from "../services/api";
 import { Wallet, Calculator, ArrowUpCircle, ArrowDownCircle, Plus, Search, Filter, Trash2, Edit, X } from "lucide-react";
 import { motion } from "motion/react";
 import { Expense, User } from "../types";
@@ -16,8 +16,11 @@ interface AccountingProps {
 
 export function Accounting({ user }: AccountingProps) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [selectedUserId, setSelectedUserId] = useState<string>("all");
   const [showModal, setShowModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -35,20 +38,25 @@ export function Accounting({ user }: AccountingProps) {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isShopAdmin(user);
 
   useEffect(() => {
     loadData();
+    if (isAdmin) {
+      api.getUsers().then(setUsers);
+    }
 
     const unsubExp = api.subscribeExpenses((items) => {
       setExpenses(items);
       api.getDashboardStats(user).then(setStats);
     });
+    const unsubUsers = isAdmin ? api.subscribeUsers(setUsers) : () => {};
 
     return () => {
       unsubExp();
+      unsubUsers();
     };
-  }, [isAdmin, user]);
+  }, [isAdmin, user?.id, user?.businessId]);
 
   const loadData = async () => {
     try {
@@ -124,12 +132,18 @@ export function Accounting({ user }: AccountingProps) {
     setShowModal(true);
   };
 
-  const filtered = expenses.filter(e => 
-    e.category.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    (e.note && e.note.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
-
   const categories = ["দোকান ভাড়া", "বিদ্যুৎ বিল", "বেতন (স্টাফ)", "যাতায়াত খরচ", "মার্কেটিং", "অন্যান্য"];
+
+  const filtered = expenses.filter(e => {
+    const q = searchTerm.trim().toLowerCase();
+    const matchesSearch =
+      !q ||
+      (e.category || "").toLowerCase().includes(q) ||
+      (e.note && e.note.toLowerCase().includes(q));
+    const matchesCat = selectedCategory === "all" || e.category === selectedCategory;
+    const matchesUser = selectedUserId === "all" || e.userId === selectedUserId;
+    return matchesSearch && matchesCat && matchesUser;
+  });
 
   return (
     <div className="p-6 space-y-6 bg-slate-50 dark:bg-slate-950 transition-colors duration-300 min-h-full">
@@ -196,9 +210,31 @@ export function Accounting({ user }: AccountingProps) {
       </div>
 
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden transition-colors">
-        <div className="p-6 border-b border-slate-50 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 sticky top-0 z-10 font-bengali transition-colors">
+        <div className="p-6 border-b border-slate-50 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 sticky top-0 z-10 font-bengali transition-colors">
           <h3 className="font-bold text-slate-900 dark:text-white">খরচের বিবরণ</h3>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={selectedCategory}
+              onChange={e => setSelectedCategory(e.target.value)}
+              className="px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100 outline-none font-bengali"
+            >
+              <option value="all">সকল ক্যাটাগরি</option>
+              {categories.map(cat => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+            {isAdmin && (
+              <select
+                value={selectedUserId}
+                onChange={e => setSelectedUserId(e.target.value)}
+                className="px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-slate-100 outline-none font-bengali"
+              >
+                <option value="all">সকল ইউজার</option>
+                {users.map(u => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            )}
             <div className="relative group">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-primary transition-colors" size={14} />
               <input 

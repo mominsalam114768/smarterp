@@ -27,8 +27,16 @@ try {
   console.warn("Could not read firebase-applet-config.json", e);
 }
 
-const FIREBASE_PROJECT_ID = firebaseAppletConfig.projectId || "psychic-antenna-hg02f";
-const FIRESTORE_DATABASE_ID = firebaseAppletConfig.firestoreDatabaseId || "ai-studio-mainhishabpatier-32dac08c-146b-40ba-898c-34f5ac3016af";
+const FIREBASE_PROJECT_ID =
+  process.env.FIREBASE_PROJECT_ID ||
+  process.env.VITE_FIREBASE_PROJECT_ID ||
+  firebaseAppletConfig.projectId ||
+  "";
+const FIRESTORE_DATABASE_ID =
+  process.env.FIRESTORE_DATABASE_ID ||
+  process.env.VITE_FIREBASE_DATABASE_ID ||
+  firebaseAppletConfig.firestoreDatabaseId ||
+  "(default)";
 
 // Initialize firestore lazily to avoid startup crashes
 let firestore: any;
@@ -466,41 +474,21 @@ async function startServer() {
 
   const initialData = {
     users: [] as any[],
-    products: [
-      { id: "p1", name: "Classic Polo Shirt", bnName: "ক্লাসিক পোলো শার্ট", sku: "POLO-001", barcode: "12345678", categoryId: "c1", brandId: "b1", unit: "pcs", purchasePrice: 350, salePrice: 550, stock: 45, minStock: 10 },
-      { id: "p2", name: "Denim Jeans", bnName: "ডেনিম জিন্স", sku: "JEAN-002", barcode: "87654321", categoryId: "c2", brandId: "b2", unit: "pcs", purchasePrice: 800, salePrice: 1200, stock: 20, minStock: 5 },
-      { id: "p3", name: "Leather Wallet", bnName: "লেদার ওয়ালেট", sku: "WAL-003", barcode: "11223344", categoryId: "c1", brandId: "b1", unit: "pcs", purchasePrice: 400, salePrice: 750, stock: 8, minStock: 10 },
-      { id: "p4", name: "Laptop Backpack", bnName: "ল্যাপটপ ব্যাকপ্যাক", sku: "BAG-004", barcode: "44332211", categoryId: "c3", unit: "pcs", purchasePrice: 1200, salePrice: 1800, stock: 15, minStock: 5 },
-      { id: "p5", name: "Casual Sneakers", bnName: "ক্যাজুয়াল স্নিকার্স", sku: "SHO-005", barcode: "55667788", categoryId: "c4", unit: "pcs", purchasePrice: 1500, salePrice: 2200, stock: 10, minStock: 3 }
-    ],
-    categories: [
-      { id: "c1", name: "শার্ট" },
-      { id: "c2", name: "প্যান্ট" },
-      { id: "c3", name: "ব্যাগ" },
-      { id: "c4", name: "জুতা" }
-    ],
-    customers: [
-      { id: "cust1", name: "Rahim Ahmed", phone: "01812345678", dueAmount: 500, totalSpent: 2500 }
-    ],
-    suppliers: [
-      { id: "sup1", name: "Fashion Wholesale Ltd", phone: "01911223344", address: "Dhaka, Bangladesh", dueAmount: 12000 }
-    ],
-    sales: [
-      { id: "s1", invoiceNo: "INV-1001", customerId: "cust1", userId: "admin-1", totalAmount: 1500, discount: 0, vat: 75, payableAmount: 1575, paidAmount: 1575, dueAmount: 0, paymentMethod: "cash", createdAt: new Date(Date.now() - 86400000).toISOString(), items: [] }
-    ],
-    expenses: [
-      { id: "e1", category: "Rent", amount: 5000, note: "Shop rent for May", date: new Date().toISOString(), userId: "admin-1" },
-      { id: "e2", category: "Electricity", amount: 1200, note: "Electric bill", date: new Date().toISOString(), userId: "admin-1" }
-    ],
-    transactions: [],
-    smsLogs: [],
+    products: [] as any[],
+    categories: [] as any[],
+    customers: [] as any[],
+    suppliers: [] as any[],
+    sales: [] as any[],
+    expenses: [] as any[],
+    transactions: [] as any[],
+    smsLogs: [] as any[],
     smsConfig: { apiKey: "", senderId: "", provider: "Default" },
     business: {
-      id: "b1",
-      name: "আমার শপ",
+      id: "main-business",
+      name: "হিসাব পাতি",
       address: "ঢাকা, বাংলাদেশ",
-      phone: "01700000000",
-      currency: "BDT",
+      phone: "",
+      currency: "৳",
       logo: "",
       backupEmail: "",
       smtpConfig: {
@@ -1340,34 +1328,28 @@ async function startServer() {
     try {
       const parsed = new URL(urlString);
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
-      const hostname = parsed.hostname.toLowerCase();
-      // Block localhost, link-local, loopback, private ranges, cloud metadata
+      const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+      // Block IPv6 literals, numeric IPs, localhost, link-local, loopback, private ranges, cloud metadata
       if (
+        !hostname ||
+        hostname.includes(':') ||
+        /^\d+$/.test(hostname) ||
+        /^0x[0-9a-f]+$/i.test(hostname) ||
         hostname === 'localhost' ||
         hostname === '127.0.0.1' ||
         hostname === '0.0.0.0' ||
         hostname === '::1' ||
         hostname === '169.254.169.254' ||
+        hostname === 'metadata.google.internal' ||
+        hostname.startsWith('127.') ||
+        hostname.startsWith('169.254.') ||
         hostname.startsWith('192.168.') ||
         hostname.startsWith('10.') ||
-        hostname.startsWith('172.16.') ||
-        hostname.startsWith('172.17.') ||
-        hostname.startsWith('172.18.') ||
-        hostname.startsWith('172.19.') ||
-        hostname.startsWith('172.20.') ||
-        hostname.startsWith('172.21.') ||
-        hostname.startsWith('172.22.') ||
-        hostname.startsWith('172.23.') ||
-        hostname.startsWith('172.24.') ||
-        hostname.startsWith('172.25.') ||
-        hostname.startsWith('172.26.') ||
-        hostname.startsWith('172.27.') ||
-        hostname.startsWith('172.28.') ||
-        hostname.startsWith('172.29.') ||
-        hostname.startsWith('172.30.') ||
-        hostname.startsWith('172.31.') ||
+        hostname.startsWith('100.64.') ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname) ||
         hostname.endsWith('.internal') ||
-        hostname.endsWith('.local')
+        hostname.endsWith('.local') ||
+        hostname.endsWith('.localhost')
       ) {
         return false;
       }
@@ -1403,21 +1385,19 @@ async function startServer() {
     }
     
     try {
-      console.log("[SMS Proxy] Forwarding request to:", url);
       const response = await axios.get(url, { 
         timeout: 10000,
+        maxRedirects: 2,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+          'User-Agent': 'HishabPati-SMS-Client/1.0'
         }
       });
       res.json(response.data);
     } catch (err: any) {
       const statusCode = err.response?.status || 500;
-      const errorMsg = err.response?.data || err.message;
       res.status(statusCode).json({ 
-        error: errorMsg,
-        status: statusCode,
-        urlSent: url 
+        error: "SMS Gateway request failed",
+        status: statusCode
       });
     }
   });

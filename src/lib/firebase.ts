@@ -20,12 +20,54 @@ import {
   deleteField
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
+import firebaseAppletConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+const rawEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env || {};
+
+const resolvedFirebaseConfig = {
+  apiKey: rawEnv.VITE_FIREBASE_API_KEY || firebaseAppletConfig.apiKey,
+  authDomain: rawEnv.VITE_FIREBASE_AUTH_DOMAIN || firebaseAppletConfig.authDomain,
+  projectId: rawEnv.VITE_FIREBASE_PROJECT_ID || firebaseAppletConfig.projectId,
+  storageBucket: rawEnv.VITE_FIREBASE_STORAGE_BUCKET || firebaseAppletConfig.storageBucket,
+  messagingSenderId: rawEnv.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseAppletConfig.messagingSenderId,
+  appId: rawEnv.VITE_FIREBASE_APP_ID || firebaseAppletConfig.appId,
+  measurementId:
+    rawEnv.VITE_FIREBASE_MEASUREMENT_ID ||
+    (firebaseAppletConfig as { measurementId?: string }).measurementId ||
+    '',
+};
+
+export const GOOGLE_OAUTH_CLIENT_ID =
+  rawEnv.VITE_GOOGLE_OAUTH_CLIENT_ID ||
+  (firebaseAppletConfig as { oauthClientId?: string }).oauthClientId ||
+  '';
+
+/**
+ * Anti-Cloning Domain Verification:
+ * Checks whether the current hostname is authorized when VITE_ALLOWED_DOMAINS is configured,
+ * while always permitting official preview/Cloudflare Pages/local development hosts if not overridden.
+ */
+export function isAuthorizedDomain(): boolean {
+  if (typeof window === 'undefined') return true;
+  const host = (window.location.hostname || '').toLowerCase();
+  if (!host || host === 'localhost' || host === '127.0.0.1' || host.endsWith('.run.app')) {
+    return true;
+  }
+  const configuredList = (rawEnv.VITE_ALLOWED_DOMAINS || '')
+    .split(',')
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
+  if (configuredList.length === 0) {
+    return true;
+  }
+  return configuredList.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+}
+
+const app = initializeApp(resolvedFirebaseConfig);
 const resolvedDatabaseId =
-  (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
-  'ai-studio-remixhishabpatie-b725f57b-c067-4185-916f-1febb0596d8d';
+  rawEnv.VITE_FIREBASE_DATABASE_ID ||
+  (firebaseAppletConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
+  '(default)';
 export const db = getFirestore(app, resolvedDatabaseId);
 export const auth = getAuth(app);
 

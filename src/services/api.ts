@@ -236,6 +236,15 @@ function saveLocalCache(partial: Partial<LocalDBState>, bizId: string = currentB
 export function cleanForFirestore<T>(data: T): T {
   if (data === null || data === undefined) return null as unknown as T;
   if (typeof data !== 'object') return data;
+  // Preserve Firestore FieldValue sentinels (e.g., deleteField(), serverTimestamp(), increment())
+  if (
+    '_methodName' in (data as any) ||
+    (data as any).constructor?.name === 'FieldValue' ||
+    (data as any).constructor?.name?.includes('FieldValue') ||
+    typeof (data as any).isEqual === 'function'
+  ) {
+    return data;
+  }
   if (Array.isArray(data)) {
     return data.map(item => cleanForFirestore(item)) as unknown as T;
   }
@@ -246,6 +255,83 @@ export function cleanForFirestore<T>(data: T): T {
     }
   }
   return result;
+}
+
+function syncUserInAllLocalCaches(
+  userId: string,
+  email: string | undefined,
+  patch: Record<string, any>
+) {
+  if (typeof window === "undefined") return;
+  const cleanMail = (email || "").trim().toLowerCase();
+  const keysToUpdate = new Set<string>([
+    LOCAL_DB_KEY,
+    getLocalCacheKey(currentBusinessId),
+    getLocalCacheKey("main-business")
+  ]);
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(LOCAL_DB_KEY)) {
+      keysToUpdate.add(k);
+    }
+  }
+  keysToUpdate.forEach((key) => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed.users)) return;
+      let changed = false;
+      parsed.users = parsed.users.map((u: any) => {
+        if (!u) return u;
+        const uMail = String(u.email || "").trim().toLowerCase();
+        if (u.id === userId || (cleanMail && uMail === cleanMail)) {
+          changed = true;
+          const updated = { ...u, ...patch };
+          delete updated.password;
+          return updated;
+        }
+        return u;
+      });
+      if (changed) {
+        localStorage.setItem(key, JSON.stringify(parsed));
+      }
+    } catch {}
+  });
+}
+
+function findUserInAllLocalCaches(userId?: string, emailOrPhone?: string): any | null {
+  if (typeof window === "undefined") return null;
+  const cleanInput = (emailOrPhone || "").trim().toLowerCase();
+  const rawInput = (emailOrPhone || "").trim();
+  const keysToCheck = new Set<string>([
+    getLocalCacheKey(currentBusinessId),
+    getLocalCacheKey("main-business"),
+    LOCAL_DB_KEY
+  ]);
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(LOCAL_DB_KEY)) {
+      keysToCheck.add(k);
+    }
+  }
+  for (const key of keysToCheck) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      const usersArr: any[] = Array.isArray(parsed.users) ? parsed.users : [];
+      const found = usersArr.find((u: any) => {
+        if (!u) return false;
+        if (userId && u.id === userId) return true;
+        if (cleanInput && String(u.email || "").trim().toLowerCase() === cleanInput) return true;
+        if (rawInput && u.phone && String(u.phone).trim() === rawInput) return true;
+        return false;
+      });
+      if (found) return found;
+    } catch {}
+  }
+  return null;
 }
 
 export const getCurrentUser = (): User | null => {
@@ -418,16 +504,81 @@ export const api = {
       throw new Error("ইমেইল এবং পাসওয়ার্ড প্রদান করুন।");
     }
 
+    const checkCred = async (uData: any): Promise<boolean> => {
+      if (await verifyUserCredential(uData, cleanPass)) return true;
+      if (pass !== cleanPass && (await verifyUserCredential(uData, pass))) return true;
+      return false;
+    };
+
     try {
       const usersCol = collection(db, "users");
       const q = query(usersCol, where("email", "==", cleanEmail));
       const snap = await withFirestoreTimeout(getDocs(q), 6000);
+      const candidateDocs: any[] = [...snap.docs];
+      let matchedDoc: any = null;
 
-      if (!snap.empty) {
-        const userDoc = snap.docs[0];
-        const userData = userDoc.data() as any;
+      for (const d of candidateDocs) {
+        if (await checkCred(d.data())) {
+          matchedDoc = d;
+          break;
+        }
+      }
 
-        const valid = await verifyUserCredential(userData, cleanPass);
+      // Fallback: case-insensitive email or phone lookup across all users in Firestore
+      // (Handles legacy users created with uppercase letters in email, phone login, or duplicate user records)
+      if (!matchedDoc) {
+        const allUsersSnap = await withFirestoreTimeout(getDocs(usersCol), 6000);
+        if (allUsersSnap.empty && candidateDocs.length === 0) {
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("needs-initial-setup"));
+          }
+          throw new Error("সিস্টেমে এখনো কোনো অ্যাডমিন অ্যাকাউন্ট তৈরি করা হয়নি। অনুগ্রহ করে প্রথম সুপার অ্যাডমিন অ্যাকাউন্ট তৈরি করুন।");
+        }
+        const seenIds = new Set(candidateDocs.map(d => d.id));
+        for (const d of allUsersSnap.docs) {
+          if (seenIds.has(d.id)) continue;
+          const dData = d.data() as any;
+          const docEmail = String(dData.email || "").trim().toLowerCase();
+          const docPhone = String(dData.phone || "").trim();
+          if (docEmail === cleanEmail || (docPhone && docPhone === email.trim())) {
+            candidateDocs.push(d);
+            if (!matchedDoc && (await checkCred(dData))) {
+              matchedDoc = d;
+            }
+          }
+        }
+      }
+
+      if (!matchedDoc && candidateDocs.length > 0) {
+        matchedDoc = candidateDocs[0];
+      }
+
+      if (matchedDoc) {
+        const userDoc = matchedDoc;
+        let userData = { ...(userDoc.data() as any) };
+
+        let valid = await checkCred(userData);
+        // Self-healing fallback: if password was recently changed and saved in local cache while Firestore had an older hash
+        if (!valid) {
+          const localCachedUser = findUserInAllLocalCaches(userDoc.id, cleanEmail);
+          if (localCachedUser && (await checkCred(localCachedUser))) {
+            valid = true;
+            userData = {
+              ...userData,
+              passwordHash: localCachedUser.passwordHash,
+              passwordSalt: localCachedUser.passwordSalt
+            };
+            delete userData.password;
+            if (localCachedUser.passwordHash && localCachedUser.passwordSalt) {
+              updateDoc(doc(db, "users", userDoc.id), {
+                passwordHash: localCachedUser.passwordHash,
+                passwordSalt: localCachedUser.passwordSalt,
+                password: deleteField()
+              }).catch(() => {});
+            }
+          }
+        }
+
         if (!valid) {
           throw new Error("ভুল পাসওয়ার্ড। আবার চেষ্টা করুন।");
         }
@@ -435,14 +586,16 @@ export const api = {
         const globalSuper = isGlobalSuperAdmin({ id: userDoc.id, ...userData });
         const shopAdmin = isShopAdmin({ id: userDoc.id, ...userData });
 
-        // Transparently migrate legacy plaintext password to PBKDF2 hash
+        // Transparently migrate legacy plaintext password to PBKDF2 hash & normalize email
         let nextHash = userData.passwordHash;
         let nextSalt = userData.passwordSalt;
+        const normalizedEmail = String(userData.email || cleanEmail).trim().toLowerCase();
         if (!nextHash || !nextSalt) {
           const migrated = await hashPassword(cleanPass);
           nextHash = migrated.hash;
           nextSalt = migrated.salt;
           updateDoc(doc(db, "users", userDoc.id), {
+            email: normalizedEmail,
             passwordHash: nextHash,
             passwordSalt: nextSalt,
             password: deleteField(),
@@ -450,6 +603,8 @@ export const api = {
           }).catch(() => {});
         } else {
           updateDoc(doc(db, "users", userDoc.id), {
+            email: normalizedEmail,
+            password: deleteField(),
             lastSeen: new Date().toISOString()
           }).catch(() => {});
         }
@@ -476,7 +631,7 @@ export const api = {
         const loggedUser: User = {
           id: userDoc.id,
           name: userData.name || "ব্যবহারকারী",
-          email: userData.email,
+          email: normalizedEmail,
           phone: userData.phone || "",
           image: userData.image || "",
           role: shopAdmin ? "admin" : (userData.role || "salesman"),
@@ -489,7 +644,7 @@ export const api = {
 
         setApiBusinessId(resolvedBusinessId);
 
-        // Cache hashed verifier locally inside this shop's isolated cache for offline login
+        // Cache hashed verifier locally inside this shop's isolated cache and sync across all local caches
         const shopCache = getLocalCache(resolvedBusinessId);
         const existingIdx = shopCache.users.findIndex((u: any) => u.id === loggedUser.id);
         const offlineRecord = { ...loggedUser, passwordHash: nextHash, passwordSalt: nextSalt };
@@ -499,51 +654,44 @@ export const api = {
           shopCache.users.push(offlineRecord);
         }
         saveLocalCache({ users: shopCache.users }, resolvedBusinessId);
+        syncUserInAllLocalCaches(loggedUser.id, normalizedEmail, offlineRecord);
 
         return stripSensitiveUserFields(loggedUser);
       }
     } catch (fsErr: any) {
-      if (fsErr.message?.includes("ভুল পাসওয়ার্ড")) throw fsErr;
+      if (fsErr.message?.includes("ভুল পাসওয়ার্ড") || fsErr.message?.includes("অ্যাডমিন অ্যাকাউন্ট তৈরি")) {
+        throw fsErr;
+      }
       console.warn("Firestore login query failed, checking offline shop caches:", fsErr);
     }
 
     // Offline fallback across all isolated shop localStorage caches
     if (typeof window !== "undefined") {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (!key || !key.startsWith(LOCAL_DB_KEY)) continue;
-        try {
-          const parsed = JSON.parse(localStorage.getItem(key) || "{}");
-          const usersArr: any[] = Array.isArray(parsed.users) ? parsed.users : [];
-          const found = usersArr.find(u => (u.email || "").toLowerCase().trim() === cleanEmail);
-          if (found) {
-            const valid = await verifyUserCredential(found, cleanPass);
-            if (!valid) {
-              throw new Error("ভুল পাসওয়ার্ড। আবার চেষ্টা করুন।");
-            }
-            const globalSuper = isGlobalSuperAdmin(found);
-            const shopAdmin = isShopAdmin(found);
-            const assignedBizId = found.businessId || "main-business";
-            const savedAdminShop = localStorage.getItem(ACTIVE_SHOP_KEY);
-            const resolvedBizId = globalSuper ? (savedAdminShop || assignedBizId) : assignedBizId;
-            if (!globalSuper) {
-              localStorage.removeItem(ACTIVE_SHOP_KEY);
-            }
-            setApiBusinessId(resolvedBizId);
-            const safeFound = stripSensitiveUserFields(found);
-            return {
-              ...safeFound,
-              role: shopAdmin ? "admin" : safeFound.role,
-              isSuperAdmin: globalSuper,
-              businessId: resolvedBizId,
-              permissions: shopAdmin
-                ? ADMIN_DEFAULT_PERMISSIONS
-                : (safeFound.permissions || []).filter((p: string) => p !== "settings" && p !== "approvals")
-            } as User;
-          }
-        } catch (innerErr: any) {
-          if (innerErr?.message?.includes("ভুল পাসওয়ার্ড")) throw innerErr;
+      const found = findUserInAllLocalCaches(undefined, email);
+      if (found) {
+        const valid = await checkCred(found);
+        if (!valid) {
+          throw new Error("ভুল পাসওয়ার্ড। আবার চেষ্টা করুন।");
         }
+        const globalSuper = isGlobalSuperAdmin(found);
+        const shopAdmin = isShopAdmin(found);
+        const assignedBizId = found.businessId || "main-business";
+        const savedAdminShop = localStorage.getItem(ACTIVE_SHOP_KEY);
+        const resolvedBizId = globalSuper ? (savedAdminShop || assignedBizId) : assignedBizId;
+        if (!globalSuper) {
+          localStorage.removeItem(ACTIVE_SHOP_KEY);
+        }
+        setApiBusinessId(resolvedBizId);
+        const safeFound = stripSensitiveUserFields(found);
+        return {
+          ...safeFound,
+          role: shopAdmin ? "admin" : safeFound.role,
+          isSuperAdmin: globalSuper,
+          businessId: resolvedBizId,
+          permissions: shopAdmin
+            ? ADMIN_DEFAULT_PERMISSIONS
+            : (safeFound.permissions || []).filter((p: string) => p !== "settings" && p !== "approvals")
+        } as User;
       }
     }
 
@@ -629,36 +777,64 @@ export const api = {
     const cur = getCurrentUser();
     if (!cur) throw new Error("অননুমোদিত অনুরোধ।");
 
+    const rawCurrent = passwords.currentPassword || "";
+    const trimmedCurrent = rawCurrent.trim();
     const nextPass = (passwords.newPassword || "").trim();
     if (nextPass.length < 6) {
       throw new Error("নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।");
     }
 
+    const verifyCurrent = async (uData: any): Promise<boolean> => {
+      if (await verifyUserCredential(uData, trimmedCurrent)) return true;
+      if (rawCurrent !== trimmedCurrent && (await verifyUserCredential(uData, rawCurrent))) return true;
+      return false;
+    };
+
     const { hash, salt } = await hashPassword(nextPass);
+    const cleanEmail = String(cur.email || "").trim().toLowerCase();
 
     try {
       const userRef = doc(db, "users", cur.id);
       const snap = await getDoc(userRef);
       if (snap.exists()) {
         const data = snap.data();
-        const valid = await verifyUserCredential(data, passwords.currentPassword);
+        let valid = await verifyCurrent(data);
+        if (!valid) {
+          const localUser = findUserInAllLocalCaches(cur.id, cleanEmail);
+          if (localUser && (await verifyCurrent(localUser))) {
+            valid = true;
+          }
+        }
         if (!valid) {
           throw new Error("বর্তমান পাসওয়ার্ড সঠিক নয়।");
         }
         await updateDoc(userRef, {
           passwordHash: hash,
           passwordSalt: salt,
-          password: deleteField()
+          password: deleteField(),
+          ...(cleanEmail ? { email: cleanEmail } : {})
         });
 
-        const cache = getLocalCache(cur.businessId || currentBusinessId);
-        const u = cache.users.find(x => x.id === cur.id);
-        if (u) {
-          delete u.password;
-          u.passwordHash = hash;
-          u.passwordSalt = salt;
-          saveLocalCache(cache, cur.businessId || currentBusinessId);
+        // Also update any duplicate user documents sharing the same email
+        if (cleanEmail) {
+          const sameEmailSnap = await getDocs(query(collection(db, "users"), where("email", "==", cleanEmail)));
+          await Promise.all(
+            sameEmailSnap.docs
+              .filter(d => d.id !== cur.id)
+              .map(d =>
+                updateDoc(doc(db, "users", d.id), {
+                  passwordHash: hash,
+                  passwordSalt: salt,
+                  password: deleteField()
+                }).catch(() => {})
+              )
+          );
         }
+
+        syncUserInAllLocalCaches(cur.id, cleanEmail, {
+          passwordHash: hash,
+          passwordSalt: salt
+        });
         return true;
       }
     } catch (e: any) {
@@ -666,17 +842,16 @@ export const api = {
       console.warn("Firestore changePassword error:", e);
     }
 
-    const cache = getLocalCache(cur.businessId || currentBusinessId);
-    const u = cache.users.find(x => x.id === cur.id);
-    if (!u) throw new Error("ব্যবহারকারী পাওয়া যায়নি।");
-    const valid = await verifyUserCredential(u, passwords.currentPassword);
+    const localUser = findUserInAllLocalCaches(cur.id, cleanEmail);
+    if (!localUser) throw new Error("ব্যবহারকারী পাওয়া যায়নি।");
+    const valid = await verifyCurrent(localUser);
     if (!valid) {
       throw new Error("বর্তমান পাসওয়ার্ড সঠিক নয়।");
     }
-    delete u.password;
-    u.passwordHash = hash;
-    u.passwordSalt = salt;
-    saveLocalCache(cache, cur.businessId || currentBusinessId);
+    syncUserInAllLocalCaches(cur.id, cleanEmail, {
+      passwordHash: hash,
+      passwordSalt: salt
+    });
     return true;
   },
 
@@ -690,11 +865,17 @@ export const api = {
       throw new Error("নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।");
     }
 
+    const localTarget = findUserInAllLocalCaches(userId);
+    let targetEmail = String(localTarget?.email || "").trim().toLowerCase();
+
     // Enforce shop boundaries & super-admin protection
     try {
       const targetSnap = await getDoc(doc(db, "users", userId));
       if (targetSnap.exists()) {
         const targetData = targetSnap.data() as any;
+        if (targetData.email) {
+          targetEmail = String(targetData.email).trim().toLowerCase();
+        }
         const targetIsSuper = isGlobalSuperAdmin({ id: targetSnap.id, ...targetData });
         if (targetIsSuper && !isGlobalSuperAdmin(cur)) {
           throw new Error("সুপার অ্যাডমিনের পাসওয়ার্ড পরিবর্তন করার অনুমতি আপনার নেই।");
@@ -709,41 +890,138 @@ export const api = {
 
     const { hash, salt } = await hashPassword(cleanNewPass);
 
+    // Update local caches first so even if offline, the new password is immediately saved everywhere
+    syncUserInAllLocalCaches(userId, targetEmail, {
+      passwordHash: hash,
+      passwordSalt: salt
+    });
+
     try {
-      await updateDoc(doc(db, "users", userId), {
-        passwordHash: hash,
-        passwordSalt: salt,
-        password: deleteField()
-      });
+      const targetRef = doc(db, "users", userId);
+      const targetSnap = await getDoc(targetRef);
+      if (targetSnap.exists()) {
+        await updateDoc(targetRef, {
+          passwordHash: hash,
+          passwordSalt: salt,
+          password: deleteField(),
+          ...(targetEmail ? { email: targetEmail } : {})
+        });
+      } else if (localTarget) {
+        const { password: _drop, ...safeLocal } = localTarget;
+        await setDoc(
+          targetRef,
+          cleanForFirestore({
+            ...safeLocal,
+            id: userId,
+            email: targetEmail || safeLocal.email || "",
+            businessId: safeLocal.businessId || currentBusinessId || "main-business",
+            passwordHash: hash,
+            passwordSalt: salt
+          }),
+          { merge: true }
+        );
+      }
+
+      // Also sync any duplicate user documents sharing the same email in Firestore
+      if (targetEmail) {
+        const sameEmailSnap = await getDocs(query(collection(db, "users"), where("email", "==", targetEmail)));
+        await Promise.all(
+          sameEmailSnap.docs
+            .filter(d => d.id !== userId)
+            .map(d =>
+              updateDoc(doc(db, "users", d.id), {
+                passwordHash: hash,
+                passwordSalt: salt,
+                password: deleteField()
+              }).catch(() => {})
+            )
+        );
+      }
     } catch (e) {
       console.warn("Firestore adminResetPassword error:", e);
     }
 
-    const cache = getLocalCache();
-    const u = cache.users.find(x => x.id === userId);
-    if (u) {
-      delete u.password;
-      u.passwordHash = hash;
-      u.passwordSalt = salt;
-      saveLocalCache(cache);
-    }
     return true;
   },
 
   // --- Users (Strictly Isolated per Shop — zero cross-shop leakage or plaintext passwords) ---
   getUsers: async (): Promise<User[]> => {
+    const belongsToCurrentShop = (u: any): boolean =>
+      (u.businessId || "main-business") === currentBusinessId || isGlobalSuperAdmin(u);
+
     const filterShopUsers = (list: any[]): User[] =>
       list
-        .filter(u => (u.businessId || "main-business") === currentBusinessId)
+        .filter(belongsToCurrentShop)
         .map(stripSensitiveUserFields);
+
+    const mergeWithLocalAndCurrent = (baseList: any[]): any[] => {
+      const map = new Map<string, any>();
+      baseList.forEach(u => {
+        if (u && u.id && belongsToCurrentShop(u)) {
+          map.set(u.id, u);
+        }
+      });
+      const cache = getLocalCache();
+      (cache.users || []).forEach(u => {
+        if (u && u.id && !map.has(u.id) && belongsToCurrentShop(u)) {
+          map.set(u.id, u);
+        }
+      });
+      const cur = getCurrentUser();
+      if (cur && cur.id && !map.has(cur.id) && belongsToCurrentShop(cur)) {
+        map.set(cur.id, cur);
+      }
+      return Array.from(map.values());
+    };
 
     try {
       const snap = await getDocs(collection(db, "users"));
       const rawShopUsers: any[] = [];
       snap.forEach(d => {
         const data = d.data();
-        if ((data.businessId || "main-business") === currentBusinessId) {
-          rawShopUsers.push({
+        const candidate = {
+          id: d.id,
+          name: data.name || "ব্যবহারকারী",
+          email: data.email || "",
+          phone: data.phone || "",
+          role: data.role || "salesman",
+          isSuperAdmin: data.isSuperAdmin === true || d.id === "admin-1",
+          permissions: data.permissions || ["pos", "sales", "reports"],
+          businessId: data.businessId || "main-business",
+          passwordHash: data.passwordHash,
+          passwordSalt: data.passwordSalt,
+          createdAt: data.createdAt || new Date().toISOString(),
+          lastSeen: data.lastSeen || new Date().toISOString()
+        };
+        if (belongsToCurrentShop(candidate)) {
+          rawShopUsers.push(candidate);
+        }
+      });
+
+      const combined = mergeWithLocalAndCurrent(rawShopUsers);
+      if (combined.length > 0) {
+        saveLocalCache({ users: combined });
+        return filterShopUsers(combined);
+      }
+      return [];
+    } catch (err) {
+      console.warn("Firestore getUsers failed, using cache:", err);
+      const cache = getLocalCache();
+      return filterShopUsers(mergeWithLocalAndCurrent(cache.users || []));
+    }
+  },
+
+  subscribeUsers: (callback: (users: User[]) => void): (() => void) => {
+    const belongsToCurrentShop = (u: any): boolean =>
+      (u.businessId || "main-business") === currentBusinessId || isGlobalSuperAdmin(u);
+
+    try {
+      const colRef = collection(db, "users");
+      return onSnapshot(colRef, (snap) => {
+        const rawShopUsers: any[] = [];
+        snap.forEach(d => {
+          const data = d.data();
+          const candidate = {
             id: d.id,
             name: data.name || "ব্যবহারকারী",
             email: data.email || "",
@@ -756,44 +1034,9 @@ export const api = {
             passwordSalt: data.passwordSalt,
             createdAt: data.createdAt || new Date().toISOString(),
             lastSeen: data.lastSeen || new Date().toISOString()
-          });
-        }
-      });
-
-      if (rawShopUsers.length > 0) {
-        saveLocalCache({ users: rawShopUsers });
-        return filterShopUsers(rawShopUsers);
-      }
-      return [];
-    } catch (err) {
-      console.warn("Firestore getUsers failed, using cache:", err);
-      const cache = getLocalCache();
-      return filterShopUsers(cache.users || []);
-    }
-  },
-
-  subscribeUsers: (callback: (users: User[]) => void): (() => void) => {
-    try {
-      const colRef = collection(db, "users");
-      return onSnapshot(colRef, (snap) => {
-        const rawShopUsers: any[] = [];
-        snap.forEach(d => {
-          const data = d.data();
-          if ((data.businessId || "main-business") === currentBusinessId) {
-            rawShopUsers.push({
-              id: d.id,
-              name: data.name || "ব্যবহারকারী",
-              email: data.email || "",
-              phone: data.phone || "",
-              role: data.role || "salesman",
-              isSuperAdmin: data.isSuperAdmin === true || d.id === "admin-1",
-              permissions: data.permissions || ["pos", "sales", "reports"],
-              businessId: data.businessId || "main-business",
-              passwordHash: data.passwordHash,
-              passwordSalt: data.passwordSalt,
-              createdAt: data.createdAt || new Date().toISOString(),
-              lastSeen: data.lastSeen || new Date().toISOString()
-            });
+          };
+          if (belongsToCurrentShop(candidate)) {
+            rawShopUsers.push(candidate);
           }
         });
         saveLocalCache({ users: rawShopUsers });
@@ -871,17 +1114,22 @@ export const api = {
     }
 
     const updatePayload: any = { ...user };
+    if (typeof updatePayload.email === "string") {
+      updatePayload.email = updatePayload.email.trim().toLowerCase();
+    }
+
     // Never allow client updates to escalate isSuperAdmin or businessId arbitrarily unless Global Super Admin
     if (!isGlobalSuperAdmin(cur)) {
       delete updatePayload.isSuperAdmin;
       delete updatePayload.businessId;
     }
 
-    if (typeof user.password === "string" && user.password.trim().length > 0) {
-      if (user.password.trim().length < 6) {
+    const isPasswordChanged = typeof user.password === "string" && user.password.trim().length > 0;
+    if (isPasswordChanged) {
+      if (user.password!.trim().length < 6) {
         throw new Error("পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।");
       }
-      const { hash, salt } = await hashPassword(user.password.trim());
+      const { hash, salt } = await hashPassword(user.password!.trim());
       updatePayload.passwordHash = hash;
       updatePayload.passwordSalt = salt;
       updatePayload.password = deleteField();
@@ -889,27 +1137,63 @@ export const api = {
       delete updatePayload.password;
     }
 
+    const { password: _dropPass, ...cachePatch } = updatePayload;
+    const localTarget = findUserInAllLocalCaches(id);
+    let resolvedEmail = String(updatePayload.email || localTarget?.email || "").trim().toLowerCase();
+
     try {
-      const targetSnap = await getDoc(doc(db, "users", id));
+      const targetRef = doc(db, "users", id);
+      const targetSnap = await getDoc(targetRef);
       if (targetSnap.exists()) {
         const targetData = targetSnap.data() as any;
+        if (!resolvedEmail && targetData.email) {
+          resolvedEmail = String(targetData.email).trim().toLowerCase();
+        }
         if (isGlobalSuperAdmin({ id, ...targetData }) && !isGlobalSuperAdmin(cur)) {
           throw new Error("সুপার অ্যাডমিনের তথ্য পরিবর্তন করার অনুমতি নেই।");
         }
         if (!isGlobalSuperAdmin(cur) && (targetData.businessId || "main-business") !== currentBusinessId) {
           throw new Error("অন্য শপের ইউজার সম্পাদনা করা যাবে না।");
         }
+        await updateDoc(targetRef, cleanForFirestore(updatePayload));
+      } else {
+        await setDoc(
+          targetRef,
+          cleanForFirestore({
+            ...(localTarget || {}),
+            ...cachePatch,
+            id,
+            email: resolvedEmail,
+            businessId: localTarget?.businessId || currentBusinessId || "main-business"
+          }),
+          { merge: true }
+        );
       }
-      await updateDoc(doc(db, "users", id), cleanForFirestore(updatePayload));
+
+      if (isPasswordChanged && resolvedEmail) {
+        const sameEmailSnap = await getDocs(query(collection(db, "users"), where("email", "==", resolvedEmail)));
+        await Promise.all(
+          sameEmailSnap.docs
+            .filter(d => d.id !== id)
+            .map(d =>
+              updateDoc(doc(db, "users", d.id), {
+                passwordHash: updatePayload.passwordHash,
+                passwordSalt: updatePayload.passwordSalt,
+                password: deleteField()
+              }).catch(() => {})
+            )
+        );
+      }
     } catch (err: any) {
       if (err?.message?.includes("অনুমতি") || err?.message?.includes("অন্য শপ")) throw err;
       console.warn("Firestore updateUser failed:", err);
     }
 
+    syncUserInAllLocalCaches(id, resolvedEmail, cachePatch);
+
     const cache = getLocalCache();
     const idx = cache.users.findIndex(u => u.id === id);
     if (idx !== -1) {
-      const { password: _drop, ...cachePatch } = updatePayload;
       cache.users[idx] = { ...cache.users[idx], ...cachePatch };
       delete cache.users[idx].password;
       saveLocalCache(cache);
@@ -917,7 +1201,7 @@ export const api = {
       syncEntityToGoogleSheets('user', safeUser, 'upsert', currentBusinessId);
       return safeUser;
     }
-    const safeReturned = stripSensitiveUserFields({ id, ...updatePayload });
+    const safeReturned = stripSensitiveUserFields({ ...(localTarget || {}), id, ...cachePatch });
     syncEntityToGoogleSheets('user', safeReturned, 'upsert', currentBusinessId);
     return safeReturned;
   },
@@ -1162,17 +1446,51 @@ export const api = {
       );
     }
 
+    const matchesSaleUser = (s: Sale, targetUserId: string, targetUserName?: string): boolean => {
+      if (!targetUserId || targetUserId === "all") return true;
+      if (s.userId === targetUserId || s.createdBy === targetUserId) return true;
+      const sUserName = String((s as any).userName || "").trim().toLowerCase();
+      if (sUserName && sUserName === targetUserId.trim().toLowerCase()) return true;
+      if (targetUserName && sUserName && sUserName === targetUserName.trim().toLowerCase()) return true;
+      // Also check linked approval request if this sale was approved from a Sales Order
+      if (s.approvalRequestId) {
+        const linkedReq = (getLocalCache().approvalRequests || []).find(r => r.id === s.approvalRequestId);
+        if (linkedReq) {
+          if (linkedReq.userId === targetUserId) return true;
+          if (targetUserName && linkedReq.userName && linkedReq.userName.trim().toLowerCase() === targetUserName.trim().toLowerCase()) return true;
+        }
+      }
+      return false;
+    };
+
     // Role isolation
-    if (curUser && curUser.role === "salesman") {
-      return salesList.filter(s => s.userId === curUser.id || s.createdBy === curUser.id);
+    if (curUser && !isShopAdmin(curUser)) {
+      return salesList.filter(s => matchesSaleUser(s, curUser.id, curUser.name));
     }
-    if (userId) {
-      return salesList.filter(s => s.userId === userId || s.createdBy === userId);
+    if (userId && userId !== "all") {
+      const targetUser = (getLocalCache().users || []).find(u => u.id === userId);
+      return salesList.filter(s => matchesSaleUser(s, userId, targetUser?.name));
     }
     return salesList;
   },
 
   subscribeSales: (callback: (sales: Sale[]) => void, userId?: string, includeTemporary: boolean = false): (() => void) => {
+    const matchesSaleUser = (s: Sale, targetUserId: string, targetUserName?: string): boolean => {
+      if (!targetUserId || targetUserId === "all") return true;
+      if (s.userId === targetUserId || s.createdBy === targetUserId) return true;
+      const sUserName = String((s as any).userName || "").trim().toLowerCase();
+      if (sUserName && sUserName === targetUserId.trim().toLowerCase()) return true;
+      if (targetUserName && sUserName && sUserName === targetUserName.trim().toLowerCase()) return true;
+      if (s.approvalRequestId) {
+        const linkedReq = (getLocalCache().approvalRequests || []).find(r => r.id === s.approvalRequestId);
+        if (linkedReq) {
+          if (linkedReq.userId === targetUserId) return true;
+          if (targetUserName && linkedReq.userName && linkedReq.userName.trim().toLowerCase() === targetUserName.trim().toLowerCase()) return true;
+        }
+      }
+      return false;
+    };
+
     const filterAndEmit = (rawList: Sale[]) => {
       const curUser = getCurrentUser();
       let salesList = [...(rawList || [])];
@@ -1188,10 +1506,11 @@ export const api = {
         );
       }
 
-      if (curUser && curUser.role === "salesman") {
-        callback(salesList.filter(s => s.userId === curUser.id || s.createdBy === curUser.id));
-      } else if (userId) {
-        callback(salesList.filter(s => s.userId === userId || s.createdBy === userId));
+      if (curUser && !isShopAdmin(curUser)) {
+        callback(salesList.filter(s => matchesSaleUser(s, curUser.id, curUser.name)));
+      } else if (userId && userId !== "all") {
+        const targetUser = (getLocalCache().users || []).find(u => u.id === userId);
+        callback(salesList.filter(s => matchesSaleUser(s, userId, targetUser?.name)));
       } else {
         callback(salesList);
       }
@@ -1244,12 +1563,18 @@ export const api = {
     const paid = Number(sale.paidAmount) || 0;
     const due = sale.dueAmount !== undefined && !Number.isNaN(Number(sale.dueAmount)) ? Number(sale.dueAmount) : (payable - paid);
 
+    // Preserve explicit sale.userId / sale.createdBy (e.g. when Admin approves a Salesman's Sales Order)
+    const effectiveUserId = sale.userId || sale.createdBy || curUser?.id || "admin-1";
+    const effectiveCreatedBy = sale.createdBy || sale.userId || curUser?.id || "admin-1";
+    const effectiveUserName = (sale as any).userName || curUser?.name || "অ্যাডমিন";
+
     const newSale: Sale = {
       ...sale,
       id,
       invoiceNo: sale.invoiceNo || `INV-${Math.floor(100000 + Math.random() * 900000)}`,
-      userId: curUser?.id || sale.userId || "admin-1",
-      createdBy: curUser?.id || sale.createdBy || "admin-1",
+      userId: effectiveUserId,
+      createdBy: effectiveCreatedBy,
+      userName: effectiveUserName,
       totalAmount: Number(sale.totalAmount) || payable,
       payableAmount: payable,
       paidAmount: paid,
@@ -1479,23 +1804,45 @@ export const api = {
       list = getLocalCache().approvalRequests || [];
     }
 
-    if (curUser && curUser.role === 'salesman') {
-      return list.filter(r => r.userId === curUser.id);
+    const matchesRequestUser = (r: ApprovalRequest, targetUserId: string, targetUserName?: string): boolean => {
+      if (!targetUserId || targetUserId === 'all') return true;
+      if (r.userId === targetUserId) return true;
+      if (r.saleData?.userId === targetUserId || r.saleData?.createdBy === targetUserId) return true;
+      const rName = (r.userName || "").trim().toLowerCase();
+      if (rName && rName === targetUserId.trim().toLowerCase()) return true;
+      if (targetUserName && rName && rName === targetUserName.trim().toLowerCase()) return true;
+      return false;
+    };
+
+    if (curUser && !isShopAdmin(curUser)) {
+      return list.filter(r => matchesRequestUser(r, curUser.id, curUser.name));
     }
     if (userId && userId !== 'all') {
-      return list.filter(r => r.userId === userId);
+      const targetUser = (getLocalCache().users || []).find(u => u.id === userId);
+      return list.filter(r => matchesRequestUser(r, userId, targetUser?.name));
     }
     return list;
   },
 
   subscribeApprovalRequests: (callback: (requests: ApprovalRequest[]) => void, userId?: string): (() => void) => {
+    const matchesRequestUser = (r: ApprovalRequest, targetUserId: string, targetUserName?: string): boolean => {
+      if (!targetUserId || targetUserId === 'all') return true;
+      if (r.userId === targetUserId) return true;
+      if (r.saleData?.userId === targetUserId || r.saleData?.createdBy === targetUserId) return true;
+      const rName = (r.userName || "").trim().toLowerCase();
+      if (rName && rName === targetUserId.trim().toLowerCase()) return true;
+      if (targetUserName && rName && rName === targetUserName.trim().toLowerCase()) return true;
+      return false;
+    };
+
     const notify = (allList: ApprovalRequest[]) => {
       const curUser = getCurrentUser();
       let res = allList;
-      if (curUser && curUser.role === 'salesman') {
-        res = allList.filter(r => r.userId === curUser.id);
+      if (curUser && !isShopAdmin(curUser)) {
+        res = allList.filter(r => matchesRequestUser(r, curUser.id, curUser.name));
       } else if (userId && userId !== 'all') {
-        res = allList.filter(r => r.userId === userId);
+        const targetUser = (getLocalCache().users || []).find(u => u.id === userId);
+        res = allList.filter(r => matchesRequestUser(r, userId, targetUser?.name));
       }
       callback(res);
     };
@@ -1555,12 +1902,17 @@ export const api = {
     const paid = Number(sale.paidAmount) || 0;
     const due = sale.dueAmount !== undefined && !Number.isNaN(Number(sale.dueAmount)) ? Number(sale.dueAmount) : (payable - paid);
 
+    const effectiveUserId = curUser?.id || sale.userId || sale.createdBy || "salesman";
+    const effectiveUserName = curUser?.name || (sale as any).userName || "সেলসম্যান";
+    const effectiveUserRole = curUser?.role || "salesman";
+
     const tempSale: Sale = {
       ...sale,
       id: requestId,
       invoiceNo: tempInvNo,
-      userId: curUser?.id || "salesman",
-      createdBy: curUser?.id || "salesman",
+      userId: effectiveUserId,
+      createdBy: effectiveUserId,
+      userName: effectiveUserName,
       totalAmount: Number(sale.totalAmount) || payable,
       payableAmount: payable,
       paidAmount: paid,
@@ -1575,9 +1927,9 @@ export const api = {
       id: requestId,
       type: 'sale',
       status: 'pending',
-      userId: curUser?.id || "salesman",
-      userName: curUser?.name || "সেলসম্যান",
-      userRole: curUser?.role || "salesman",
+      userId: effectiveUserId,
+      userName: effectiveUserName,
+      userRole: effectiveUserRole,
       temporaryInvoiceNo: tempInvNo,
       createdAt: new Date().toISOString(),
       saleData: tempSale
@@ -1739,14 +2091,20 @@ export const api = {
       const finalSaleId = `sale_${Date.now()}`;
 
       // Call createSale which deducts stock, updates customer balance, and adds to বিক্রয় লিস্ট!
+      // Preserve the original Salesman's userId, createdBy, and userName so user filters work accurately!
+      const originalUserId = req.userId || saleData.userId || saleData.createdBy || curUser?.id || "admin-1";
+      const originalUserName = req.userName || (saleData as any).userName || curUser?.name || "সেলসম্যান";
       const confirmedSale = await api.createSale({
         ...saleData,
         id: finalSaleId,
         invoiceNo: finalInvoiceNo,
+        userId: originalUserId,
+        createdBy: originalUserId,
+        userName: originalUserName,
         isTemporary: false,
         approvalStatus: 'approved',
         approvalRequestId: requestId
-      });
+      } as any);
 
       // Remove any legacy temporary sale document if present
       try {
@@ -1803,12 +2161,14 @@ export const api = {
         throw new Error("পেমেন্টের তথ্য অসম্পূর্ণ।");
       }
 
-      // Deduct customer due and record official payment receipt
+      // Deduct customer due and record official payment receipt (preserving the salesman who collected the payment)
       const payResult = await api.recordPayment(
         pData.customerId,
         pData.amount,
         pData.paymentMethod || "cash",
-        pData.note ? `${pData.note} (অনুমোদিত রিকুয়েস্ট: ${req.temporaryInvoiceNo})` : `অনুমোদিত বকেয়া আদায় (${req.temporaryInvoiceNo})`
+        pData.note ? `${pData.note} (অনুমোদিত রিকুয়েস্ট: ${req.temporaryInvoiceNo})` : `অনুমোদিত বকেয়া আদায় (${req.temporaryInvoiceNo})`,
+        undefined,
+        { userId: req.userId, userName: req.userName }
       );
 
       const finalReceiptNo = payResult?.payment?.receiptNo || `PAY-${Date.now().toString().slice(-6)}`;
@@ -1920,6 +2280,24 @@ export const api = {
     customers = reconcileCustomersWithSales(customers, allSales, allPayments);
 
     saveLocalCache({ customers });
+
+    if (userId && userId !== "all") {
+      const targetUser = (getLocalCache().users || []).find(u => u.id === userId);
+      const targetName = targetUser?.name?.trim().toLowerCase();
+      return customers.filter(c => {
+        if (c.createdBy === userId) return true;
+        if (targetName && c.createdBy && c.createdBy.trim().toLowerCase() === targetName) return true;
+        // Also match customers who have sales by this user
+        const hasSaleByUser = allSales.some(s =>
+          ((s.customerId && s.customerId === c.id) ||
+           (c.phone && s.customerPhone && s.customerPhone.trim() === c.phone.trim()) ||
+           (c.name && s.customerName && s.customerName.trim().toLowerCase() === c.name.trim().toLowerCase())) &&
+          (s.userId === userId || s.createdBy === userId || (targetName && String((s as any).userName || "").trim().toLowerCase() === targetName))
+        );
+        return hasSaleByUser;
+      });
+    }
+
     return customers;
   },
 
@@ -2026,7 +2404,7 @@ export const api = {
     return true;
   },
 
-  recordPayment: async (customerId: string, amount: number, method: string = "cash", note?: string, date?: string): Promise<any> => {
+  recordPayment: async (customerId: string, amount: number, method: string = "cash", note?: string, date?: string, collectorInfo?: { userId?: string; userName?: string }): Promise<any> => {
     const payAmount = Number(amount) || 0;
     const curUser = getCurrentUser();
 
@@ -2072,7 +2450,8 @@ export const api = {
       amount: payAmount,
       method,
       note: note || "",
-      userName: curUser?.name || "অ্যাডমিন",
+      userId: collectorInfo?.userId || curUser?.id || "admin-1",
+      userName: collectorInfo?.userName || curUser?.name || "অ্যাডমিন",
       date: date || new Date().toISOString()
     };
 
@@ -2587,11 +2966,21 @@ export const api = {
       expenses = (getLocalCache().expenses || []) as Expense[];
     }
 
-    if (curUser && curUser.role === "salesman") {
-      return expenses.filter(e => e.userId === curUser.id);
+    const matchesExpenseUser = (e: Expense, targetUserId: string, targetUserName?: string): boolean => {
+      if (!targetUserId || targetUserId === "all") return true;
+      if (e.userId === targetUserId) return true;
+      const eUserName = String((e as any).userName || "").trim().toLowerCase();
+      if (eUserName && eUserName === targetUserId.trim().toLowerCase()) return true;
+      if (targetUserName && eUserName && eUserName === targetUserName.trim().toLowerCase()) return true;
+      return false;
+    };
+
+    if (curUser && !isShopAdmin(curUser)) {
+      return expenses.filter(e => matchesExpenseUser(e, curUser.id, curUser.name));
     }
-    if (userId) {
-      return expenses.filter(e => e.userId === userId);
+    if (userId && userId !== "all") {
+      const targetUser = (getLocalCache().users || []).find(u => u.id === userId);
+      return expenses.filter(e => matchesExpenseUser(e, userId, targetUser?.name));
     }
     return expenses;
   },
@@ -2605,7 +2994,7 @@ export const api = {
         snap.forEach(d => expenses.push({ id: d.id, ...d.data() } as Expense));
         expenses.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
         saveLocalCache({ expenses });
-        if (curUser && curUser.role === "salesman") {
+        if (curUser && !isShopAdmin(curUser)) {
           callback(expenses.filter(e => e.userId === curUser.id));
         } else {
           callback(expenses);

@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, FormEvent, useRef, ChangeEvent } from "react";
-import { api, isOtherProduct } from "../services/api";
+import { api, isOtherProduct, isShopAdmin } from "../services/api";
 import { Product, Category, User } from "../types";
 import { Package, Plus, Search, Filter, MoreVertical, Edit, Trash2, FileSpreadsheet, Download, Scan, X, Sparkles } from "lucide-react";
 import * as XLSX from 'xlsx';
@@ -48,7 +48,7 @@ export function ProductList({ user }: ProductListProps) {
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error'} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isShopAdmin(user);
   const canAdd = isAdmin || user?.permissions?.includes('add_product');
   const canDelete = isAdmin || user?.permissions?.includes('delete_product');
 
@@ -73,7 +73,7 @@ export function ProductList({ user }: ProductListProps) {
       unsubProducts();
       unsubCategories();
     };
-  }, []);
+  }, [user?.businessId]);
 
   const loadData = async () => {
     try {
@@ -340,9 +340,13 @@ export function ProductList({ user }: ProductListProps) {
   };
 
   const filtered = products.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      p.bnName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.sku.toLowerCase().includes(searchTerm.toLowerCase());
+    const q = searchTerm.trim().toLowerCase();
+    const matchesSearch = !q ||
+      (p.name || "").toLowerCase().includes(q) || 
+      (p.bnName || "").toLowerCase().includes(q) ||
+      (p.sku || "").toLowerCase().includes(q) ||
+      (p.barcode || "").toLowerCase().includes(q) ||
+      (Array.isArray(p.barcodes) && p.barcodes.some(b => String(b).toLowerCase().includes(q)));
     
     const matchesCategory = selectedCategory === "all" || p.categoryId === selectedCategory;
     

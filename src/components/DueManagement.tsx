@@ -44,7 +44,10 @@ export function DueManagement({ user }: DueManagementProps) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [allPayments, setAllPayments] = useState<any[]>([]);
   const [allSales, setAllSales] = useState<Sale[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
+  const [dueStatusFilter, setDueStatusFilter] = useState<"all" | "due" | "advance" | "settled">("all");
+  const [selectedUserId, setSelectedUserId] = useState<string>("all");
   const [loading, setLoading] = useState(true);
   const [activeView, setActiveView] = useState<"customers" | "payments">("customers");
 
@@ -71,12 +74,16 @@ export function DueManagement({ user }: DueManagementProps) {
 
   useEffect(() => {
     fetchAllData();
+    if (isAdminUser) {
+      api.getUsers().then(setUsers).catch(() => {});
+    }
     const unsubCust = api.subscribeCustomers((data) => {
       setCustomers(data);
     });
     const unsubSales = api.subscribeSales((data) => {
       setAllSales(data);
     });
+    const unsubUsers = isAdminUser ? api.subscribeUsers(setUsers) : () => {};
     const handlePaymentsUpdated = () => {
       api.getAllCustomerPayments().then(setAllPayments).catch(() => {});
     };
@@ -85,10 +92,11 @@ export function DueManagement({ user }: DueManagementProps) {
     return () => {
       unsubCust();
       unsubSales();
+      unsubUsers();
       window.removeEventListener("customer-payments-updated", handlePaymentsUpdated);
       window.removeEventListener("sales-updated", handlePaymentsUpdated);
     };
-  }, []);
+  }, [activeUser?.businessId, isAdminUser]);
 
   const showNotification = (message: string, type: "success" | "error" = "success") => {
     setNotification({ message, type });
@@ -328,27 +336,71 @@ export function DueManagement({ user }: DueManagementProps) {
 
   const filteredCustomers = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    if (!q) return customers;
-    return customers.filter(
-      (c) =>
+    const targetUser = users.find((u) => u.id === selectedUserId);
+    const targetName = targetUser?.name?.trim().toLowerCase();
+
+    return customers.filter((c) => {
+      const matchesSearch =
+        !q ||
         (c.name || "").toLowerCase().includes(q) ||
         (c.phone || "").toLowerCase().includes(q) ||
-        (c.address || "").toLowerCase().includes(q)
-    );
-  }, [customers, searchTerm]);
+        (c.address || "").toLowerCase().includes(q);
+      if (!matchesSearch) return false;
+
+      const due = Number(c.dueAmount) || 0;
+      if (dueStatusFilter === "due" && due <= 0) return false;
+      if (dueStatusFilter === "advance" && due >= 0) return false;
+      if (dueStatusFilter === "settled" && due !== 0) return false;
+
+      if (selectedUserId !== "all") {
+        const matchCreator =
+          c.createdBy === selectedUserId ||
+          (targetName && c.createdBy && c.createdBy.trim().toLowerCase() === targetName);
+        const matchSale = allSales.some(
+          (s) =>
+            matchesCustomer(s, c) &&
+            (s.userId === selectedUserId ||
+              s.createdBy === selectedUserId ||
+              (targetName && String((s as any).userName || "").trim().toLowerCase() === targetName))
+        );
+        const matchPayment = allPayments.some(
+          (p) =>
+            matchesCustomer(p, c) &&
+            (p.userId === selectedUserId ||
+              (targetName && String(p.userName || "").trim().toLowerCase() === targetName))
+        );
+        if (!matchCreator && !matchSale && !matchPayment) return false;
+      }
+
+      return true;
+    });
+  }, [customers, searchTerm, dueStatusFilter, selectedUserId, users, allSales, allPayments]);
 
   const filteredPayments = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    if (!q) return allPayments;
-    return allPayments.filter(
-      (p) =>
+    const targetUser = users.find((u) => u.id === selectedUserId);
+    const targetName = targetUser?.name?.trim().toLowerCase();
+
+    return allPayments.filter((p) => {
+      const matchesSearch =
+        !q ||
         (p.customerName || "").toLowerCase().includes(q) ||
         (p.customerPhone || "").toLowerCase().includes(q) ||
         (p.receiptNo || "").toLowerCase().includes(q) ||
         (p.note || "").toLowerCase().includes(q) ||
-        (p.method || "").toLowerCase().includes(q)
-    );
-  }, [allPayments, searchTerm]);
+        (p.method || "").toLowerCase().includes(q);
+      if (!matchesSearch) return false;
+
+      if (selectedUserId !== "all") {
+        const matchUser =
+          p.userId === selectedUserId ||
+          (targetName && String(p.userName || "").trim().toLowerCase() === targetName);
+        if (!matchUser) return false;
+      }
+
+      return true;
+    });
+  }, [allPayments, searchTerm, selectedUserId, users]);
 
   const totalDue = customers.reduce((sum, c) => sum + (c.dueAmount > 0 ? c.dueAmount : 0), 0);
   const totalPayable = customers.reduce((sum, c) => sum + (c.dueAmount < 0 ? Math.abs(c.dueAmount) : 0), 0);
@@ -485,9 +537,34 @@ export function DueManagement({ user }: DueManagementProps) {
           </button>
         </div>
 
-        <p className="text-xs text-slate-500 dark:text-slate-400 font-bengali px-2">
-          💡 যেকোনো ক্রেতার উপর ক্লিক করলে তার সম্পূর্ণ <strong>পেমেন্ট ও বাকি হিস্টোরি</strong> দেখতে পাবেন।
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {activeView === "customers" && (
+            <select
+              value={dueStatusFilter}
+              onChange={(e) => setDueStatusFilter(e.target.value as any)}
+              className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl py-2 px-3 text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 font-bengali outline-none"
+            >
+              <option value="all">সকল ক্রেতা ({customers.length})</option>
+              <option value="due">বকেয়া ক্রেতা ({customers.filter(c => (Number(c.dueAmount) || 0) > 0).length})</option>
+              <option value="advance">ক্রেতা পাবে ({customers.filter(c => (Number(c.dueAmount) || 0) < 0).length})</option>
+              <option value="settled">পরিশোধিত ({customers.filter(c => (Number(c.dueAmount) || 0) === 0).length})</option>
+            </select>
+          )}
+          {isAdminUser && (
+            <select
+              value={selectedUserId}
+              onChange={(e) => setSelectedUserId(e.target.value)}
+              className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl py-2 px-3 text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 font-bengali outline-none"
+            >
+              <option value="all">সকল ইউজার / সেলসম্যান</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} ({u.role === "admin" ? "অ্যাডমিন" : "সেলসম্যান"})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
       </div>
 
       {/* VIEW 1: CUSTOMER CARDS */}

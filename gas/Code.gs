@@ -109,14 +109,14 @@ function getTargetSpreadsheet(paramsOrPayload, allowAutoCreate) {
   if (sheetId) {
     try {
       const opened = SpreadsheetApp.openById(sheetId);
-      if (bizId && bizId !== 'main-business') {
+      if (bizId) {
         props.setProperty('SHOP_SHEET_' + bizId, sheetId);
       }
       return opened;
     } catch (e) {}
   }
 
-  if (bizId && bizId !== 'main-business') {
+  if (bizId) {
     try {
       const savedSheetId = props.getProperty('SHOP_SHEET_' + bizId);
       if (savedSheetId) {
@@ -124,7 +124,7 @@ function getTargetSpreadsheet(paramsOrPayload, allowAutoCreate) {
       }
     } catch (e) {}
 
-    if (allowAutoCreate !== false) {
+    if (bizId !== 'main-business' && allowAutoCreate !== false) {
       try {
         const rawShopName =
           paramsOrPayload.shopName ||

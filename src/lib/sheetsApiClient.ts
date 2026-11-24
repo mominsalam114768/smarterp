@@ -632,7 +632,29 @@ export const findExistingShopSpreadsheetInDrive = async (
         return true;
       });
       const exactIdMatch = files.find((f) => f.appProperties?.hishabpatiShopId === String(shop.id));
-      const chosen = exactIdMatch || files[0];
+      let chosen = exactIdMatch;
+      if (!chosen && files.length > 0) {
+        // Verify untagged candidate's internal Business ID cell in 'প্রতিষ্ঠান সেটিংস'!B2 so another shop's untagged sheet is never claimed
+        for (const candidate of files) {
+          try {
+            const settingsCheck = await sheetsFetch(
+              `${SHEETS_API_BASE}/${candidate.id}/values/'${encodeURIComponent(SHEET_TABS.SETTINGS)}'!A1:B6`,
+              accessToken
+            );
+            const rows: any[][] = settingsCheck?.values || [];
+            const idRow = rows.find((r) => String(r[0] || "").includes("Business ID"));
+            const embeddedBizId = idRow ? String(idRow[1] || "").trim() : "";
+            if (embeddedBizId && embeddedBizId !== String(shop.id)) {
+              continue; // Belongs to a different shop
+            }
+            chosen = candidate;
+            break;
+          } catch {
+            chosen = candidate;
+            break;
+          }
+        }
+      }
       if (chosen) {
         await tagSpreadsheetWithShopMetadata(accessToken, chosen.id, shop);
         return {

@@ -32,6 +32,7 @@ export function CustomerList({ user }: CustomerListProps) {
   });
   const [notification, setNotification] = useState<{message: string, type: 'success' | 'error'} | null>(null);
   const [users, setUsers] = useState<User[]>([]);
+  const [allSales, setAllSales] = useState<Sale[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string>("all");
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -68,16 +69,21 @@ export function CustomerList({ user }: CustomerListProps) {
     loadData();
     if (isAdmin) {
       api.getUsers().then(setUsers);
+      api.getSales().then(setAllSales);
     }
 
     const unsubCust = api.subscribeCustomers((items) => {
       setCustomers(items);
     });
+    const unsubUsers = isAdmin ? api.subscribeUsers(setUsers) : () => {};
+    const unsubSales = isAdmin ? api.subscribeSales(setAllSales) : () => {};
 
     return () => {
       unsubCust();
+      unsubUsers();
+      unsubSales();
     };
-  }, [isAdmin, user?.id]);
+  }, [isAdmin, user?.id, user?.businessId]);
 
   const [viewingHistory, setViewingHistory] = useState<Customer | null>(null);
   const [customerSales, setCustomerSales] = useState<Sale[]>([]);
@@ -247,10 +253,28 @@ export function CustomerList({ user }: CustomerListProps) {
   };
 
   const filtered = customers.filter(c => {
-    const matchesSearch = c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                         c.phone.includes(searchTerm);
-    const matchesUser = selectedUserId === "all" ? true : c.createdBy === selectedUserId;
-    return matchesSearch && matchesUser;
+    const q = searchTerm.trim().toLowerCase();
+    const matchesSearch = !q ||
+      (c.name || "").toLowerCase().includes(q) || 
+      (c.phone || "").includes(q) ||
+      (c.address || "").toLowerCase().includes(q);
+    if (!matchesSearch) return false;
+    if (selectedUserId === "all") return true;
+
+    const targetUser = users.find(u => u.id === selectedUserId);
+    const targetName = targetUser?.name?.trim().toLowerCase();
+    if (c.createdBy === selectedUserId) return true;
+    if (targetName && c.createdBy && c.createdBy.trim().toLowerCase() === targetName) return true;
+
+    // Match customers served by this salesman/user in sales
+    return allSales.some(s =>
+      ((s.customerId && s.customerId === c.id) ||
+       (c.phone && s.customerPhone && s.customerPhone.trim() === c.phone.trim()) ||
+       (c.name && s.customerName && s.customerName.trim().toLowerCase() === c.name.trim().toLowerCase())) &&
+      (s.userId === selectedUserId ||
+       s.createdBy === selectedUserId ||
+       (targetName && String((s as any).userName || "").trim().toLowerCase() === targetName))
+    );
   });
 
   return (

@@ -25,7 +25,7 @@ import {
   BadgeAlert
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { api, isOtherProduct } from "../services/api";
+import { api, isOtherProduct, isShopAdmin } from "../services/api";
 import { ApprovalRequest, User, Product } from "../types";
 import { formatDhakaDateTime } from "../lib/utils";
 import { printInvoice, printPaymentReceipt } from "../lib/printUtils";
@@ -59,7 +59,7 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
     setTimeout(() => setNotification(null), 3500);
   };
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isShopAdmin(user);
 
   useEffect(() => {
     loadData();
@@ -75,11 +75,16 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
       setProducts(prods);
     });
 
+    const unsubUsers = api.subscribeUsers((uList) => {
+      setUsers(uList);
+    });
+
     return () => {
       unsubReq();
       unsubProd();
+      unsubUsers();
     };
-  }, [isAdmin, user?.id]);
+  }, [isAdmin, user?.id, user?.businessId]);
 
   const loadData = async () => {
     try {
@@ -99,16 +104,50 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
     }
   };
 
-  // Filtered requests list
-  const filteredRequests = requests.filter(req => {
-    // Type Filter
-    if (typeFilter !== 'all' && req.type !== typeFilter) return false;
-    // Status Filter
-    if (statusFilter !== 'all' && req.status !== statusFilter) return false;
-    // User Filter (For Admin)
-    if (selectedUserId !== 'all' && req.userId !== selectedUserId) return false;
+  // Combine shop users + any distinct user found on approval requests so every creator is selectable
+  const filterableUsers = React.useMemo(() => {
+    const map = new Map<string, { id: string; name: string; role: string }>();
+    users.forEach(u => {
+      if (u && u.id) {
+        map.set(u.id, { id: u.id, name: u.name || "ব্যবহারকারী", role: u.role || "salesman" });
+      }
+    });
+    requests.forEach(r => {
+      const rUserId = r.userId || r.saleData?.userId || r.saleData?.createdBy;
+      const rUserName = (r.userName || (r.saleData as any)?.userName || "").trim();
+      if (!rUserId && !rUserName) return;
+      const alreadyById = rUserId ? map.has(rUserId) : false;
+      const alreadyByName = rUserName
+        ? Array.from(map.values()).some(u => u.name.trim().toLowerCase() === rUserName.toLowerCase())
+        : false;
+      if (!alreadyById && !alreadyByName) {
+        const key = rUserId || rUserName;
+        map.set(key, {
+          id: key,
+          name: rUserName || key,
+          role: r.userRole || "salesman"
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [users, requests]);
 
-    // Search Query
+  const matchesRequestUser = (req: ApprovalRequest, targetUserId: string) => {
+    if (!targetUserId || targetUserId === 'all') return true;
+    if (req.userId === targetUserId) return true;
+    if (req.saleData?.userId === targetUserId || req.saleData?.createdBy === targetUserId) return true;
+    const selectedUserObj = filterableUsers.find(u => u.id === targetUserId);
+    const reqName = (req.userName || (req.saleData as any)?.userName || "").trim().toLowerCase();
+    if (reqName && reqName === targetUserId.trim().toLowerCase()) return true;
+    if (selectedUserObj && reqName && reqName === selectedUserObj.name.trim().toLowerCase()) return true;
+    return false;
+  };
+
+  // Requests filtered by User, Type, and Search (used for accurate KPI & Status Tab counts!)
+  const baseFilteredRequests = requests.filter(req => {
+    if (typeFilter !== 'all' && req.type !== typeFilter) return false;
+    if (selectedUserId !== 'all' && !matchesRequestUser(req, selectedUserId)) return false;
+
     if (searchTerm.trim()) {
       const q = searchTerm.toLowerCase();
       const matchInvoice = (req.temporaryInvoiceNo || "").toLowerCase().includes(q) ||
@@ -122,6 +161,26 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
     }
     return true;
   });
+
+  // Final filtered requests list (including status tab filter)
+  const filteredRequests = baseFilteredRequests.filter(req => {
+    if (statusFilter !== 'all' && req.status !== statusFilter) return false;
+    return true;
+  });
+
+  const handleUserFilterChange = (newUserId: string) => {
+    setSelectedUserId(newUserId);
+    if (newUserId !== 'all') {
+      const userReqs = requests.filter(r =>
+        (typeFilter === 'all' || r.type === typeFilter) &&
+        matchesRequestUser(r, newUserId)
+      );
+      const hasInCurrentStatus = statusFilter === 'all' || userReqs.some(r => r.status === statusFilter);
+      if (!hasInCurrentStatus && userReqs.length > 0) {
+        setStatusFilter('all');
+      }
+    }
+  };
 
   // Stock check helper for a sale request (skips 'অন্যান্য' / custom products)
   const checkStockAvailability = (req: ApprovalRequest) => {
@@ -235,14 +294,14 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
     }
   };
 
-  // Quick Stats
-  const pendingCount = requests.filter(r => r.status === 'pending').length;
-  const approvedCount = requests.filter(r => r.status === 'approved').length;
-  const rejectedCount = requests.filter(r => r.status === 'rejected').length;
-  const pendingSalesTotal = requests
+  // Quick Stats (reflect active User / Type / Search filter!)
+  const pendingCount = baseFilteredRequests.filter(r => r.status === 'pending').length;
+  const approvedCount = baseFilteredRequests.filter(r => r.status === 'approved').length;
+  const rejectedCount = baseFilteredRequests.filter(r => r.status === 'rejected').length;
+  const pendingSalesTotal = baseFilteredRequests
     .filter(r => r.status === 'pending' && r.type === 'sale')
     .reduce((sum, r) => sum + (Number(r.saleData?.payableAmount) || 0), 0);
-  const pendingDueTotal = requests
+  const pendingDueTotal = baseFilteredRequests
     .filter(r => r.status === 'pending' && r.type === 'due_payment')
     .reduce((sum, r) => sum + (Number(r.paymentData?.amount) || 0), 0);
 
@@ -295,7 +354,7 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
             <ShoppingCart size={16} />
           </div>
           <div className="text-2xl font-black text-slate-900 dark:text-white">
-            {requests.filter(r => r.type === 'sale').length} টি
+            {baseFilteredRequests.filter(r => r.type === 'sale').length} টি
           </div>
           <div className="text-[10px] text-slate-500 dark:text-slate-400 font-bengali mt-1">
             টেম্পোরারি ইনভয়েস
@@ -308,7 +367,7 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
             <Wallet size={16} />
           </div>
           <div className="text-2xl font-black text-slate-900 dark:text-white">
-            {requests.filter(r => r.type === 'due_payment').length} টি
+            {baseFilteredRequests.filter(r => r.type === 'due_payment').length} টি
           </div>
           <div className="text-[10px] text-slate-500 dark:text-slate-400 font-bengali mt-1">
             খসড়া কালেকশন রসিদ
@@ -351,11 +410,11 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
             <div className="w-full lg:w-64">
               <select
                 value={selectedUserId}
-                onChange={e => setSelectedUserId(e.target.value)}
+                onChange={e => handleUserFilterChange(e.target.value)}
                 className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl py-2.5 px-3 text-slate-900 dark:text-slate-100 text-sm font-bengali outline-none"
               >
                 <option value="all">সকল ইউজার / সেলসম্যান</option>
-                {users.map(u => (
+                {filterableUsers.map(u => (
                   <option key={u.id} value={u.id}>
                     {u.name} ({u.role === 'admin' ? 'এডমিন' : 'সেলসম্যান'})
                   </option>
@@ -405,7 +464,7 @@ export function ApprovalManagement({ user }: ApprovalManagementProps) {
             { id: 'pending', label: 'অপেক্ষারত (Pending)', badge: pendingCount, color: 'bg-amber-500' },
             { id: 'approved', label: 'অনুমোদিত (Approved)', badge: approvedCount, color: 'bg-emerald-500' },
             { id: 'rejected', label: 'বাতিলকৃত (Rejected)', badge: rejectedCount, color: 'bg-rose-500' },
-            { id: 'all', label: 'সকল স্ট্যাটাস', badge: requests.length, color: 'bg-slate-500' }
+            { id: 'all', label: 'সকল স্ট্যাটাস', badge: baseFilteredRequests.length, color: 'bg-slate-500' }
           ].map(tab => (
             <button
               key={tab.id}

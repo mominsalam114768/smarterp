@@ -91,6 +91,21 @@ export const getLocalSheetsConfig = (businessId: string = currentSheetsBusinessI
       if (!parsed.spreadsheetId && parsed.sheetUrl) {
         parsed.spreadsheetId = extractSpreadsheetIdFromUrl(parsed.sheetUrl);
       }
+      // Prevent any secondary shop from accidentally inheriting main-business's spreadsheetId
+      if (targetBizId !== "main-business" && parsed.spreadsheetId) {
+        try {
+          const mainRaw = localStorage.getItem(getStorageKey("main-business")) || localStorage.getItem(LEGACY_STORAGE_KEY);
+          if (mainRaw) {
+            const mainParsed = JSON.parse(mainRaw);
+            const mainId = mainParsed?.spreadsheetId || extractSpreadsheetIdFromUrl(mainParsed?.sheetUrl);
+            if (mainId && parsed.spreadsheetId === mainId) {
+              parsed.spreadsheetId = "";
+              parsed.sheetUrl = "";
+              parsed.sheetName = "";
+            }
+          }
+        } catch {}
+      }
       return parsed;
     }
     // Migrate legacy key ONLY for main-business so new shops never inherit main-business's Google Sheet
@@ -525,21 +540,32 @@ export const ensureShopGoogleSheet = async (
       const cloudCfg = await fetchCloudSheetsConfig(targetBizId);
       const shopEmbeddedCfg = shop?.googleSheetsConfig || {};
 
+      // Guard against cross-shop sheet collision: a secondary shop must never share main-business's spreadsheetId
+      const mainShopId =
+        targetBizId !== "main-business"
+          ? getLocalSheetsConfig("main-business").spreadsheetId ||
+            extractSpreadsheetIdFromUrl(getLocalSheetsConfig("main-business").sheetUrl)
+          : "";
+
+      const sanitizeShopSheetId = (candidateId?: string): string => {
+        const clean = (candidateId || "").trim();
+        if (!clean) return "";
+        if (targetBizId !== "main-business" && mainShopId && clean === mainShopId) {
+          return "";
+        }
+        return clean;
+      };
+
       // Permanently merge all known sources (cloud config, shop doc embedded config, local config) so a shop's sheet is NEVER lost
       const existingId =
-        cloudCfg.spreadsheetId ||
-        extractSpreadsheetIdFromUrl(cloudCfg.sheetUrl) ||
-        shopEmbeddedCfg.spreadsheetId ||
-        extractSpreadsheetIdFromUrl(shopEmbeddedCfg.sheetUrl) ||
-        localCfg.spreadsheetId ||
-        extractSpreadsheetIdFromUrl(localCfg.sheetUrl) ||
+        sanitizeShopSheetId(cloudCfg.spreadsheetId || extractSpreadsheetIdFromUrl(cloudCfg.sheetUrl)) ||
+        sanitizeShopSheetId(shopEmbeddedCfg.spreadsheetId || extractSpreadsheetIdFromUrl(shopEmbeddedCfg.sheetUrl)) ||
+        sanitizeShopSheetId(localCfg.spreadsheetId || extractSpreadsheetIdFromUrl(localCfg.sheetUrl)) ||
         "";
 
-      const existingUrl =
-        cloudCfg.sheetUrl ||
-        shopEmbeddedCfg.sheetUrl ||
-        localCfg.sheetUrl ||
-        (existingId ? `https://docs.google.com/spreadsheets/d/${existingId}/edit` : "");
+      const existingUrl = existingId
+        ? `https://docs.google.com/spreadsheets/d/${existingId}/edit`
+        : "";
 
       const existingName =
         cloudCfg.sheetName ||
@@ -888,17 +914,27 @@ export const fetchCloudSheetsConfig = async (businessId: string = currentSheetsB
     const subId = subData?.spreadsheetId || extractSpreadsheetIdFromUrl(subData?.sheetUrl);
     const bizId = bizEmbedded?.spreadsheetId || extractSpreadsheetIdFromUrl(bizEmbedded?.sheetUrl);
 
-    const resolvedSpreadsheetId = subId || bizId || localId || "";
-    const resolvedSheetUrl =
-      subData?.sheetUrl ||
-      bizEmbedded?.sheetUrl ||
-      localCfg.sheetUrl ||
-      (resolvedSpreadsheetId ? `https://docs.google.com/spreadsheets/d/${resolvedSpreadsheetId}/edit` : "");
+    const mainId =
+      targetBizId !== "main-business"
+        ? getLocalSheetsConfig("main-business").spreadsheetId ||
+          extractSpreadsheetIdFromUrl(getLocalSheetsConfig("main-business").sheetUrl)
+        : "";
+
+    const rawCandidateId = subId || bizId || localId || "";
+    const resolvedSpreadsheetId =
+      targetBizId !== "main-business" && mainId && rawCandidateId === mainId
+        ? ""
+        : rawCandidateId;
+    const resolvedSheetUrl = resolvedSpreadsheetId
+      ? `https://docs.google.com/spreadsheets/d/${resolvedSpreadsheetId}/edit`
+      : "";
     const resolvedSheetName =
-      subData?.sheetName ||
-      bizEmbedded?.sheetName ||
-      localCfg.sheetName ||
-      "";
+      resolvedSpreadsheetId
+        ? subData?.sheetName ||
+          bizEmbedded?.sheetName ||
+          localCfg.sheetName ||
+          ""
+        : "";
 
     let webAppUrl = (subData?.webAppUrl || bizEmbedded?.webAppUrl || localCfg.webAppUrl || "").trim();
     if (!webAppUrl) {
